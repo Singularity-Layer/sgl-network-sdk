@@ -15,6 +15,12 @@ from .models import (
     ModelsResponse,
     PricingInfo,
     PricingResponse,
+    ProcessorDeployResult,
+    ProcessorInfo,
+    ProcessorListResponse,
+    ProcessorLogEntry,
+    ProcessorLogsResponse,
+    ProcessorResult,
 )
 
 DEFAULT_BASE_URL = (
@@ -199,6 +205,151 @@ class GridClient:
         """Retrieve the TEE attestation proof for a completed job."""
         data = self._request("GET", f"/grid/jobs/{job_id}/attestation")
         return AttestationProof.model_validate(data)
+
+    # -- processor endpoints -----------------------------------------------
+
+    def deploy_processor(
+        self,
+        name: str,
+        code: str,
+        *,
+        wallet_address: str,
+        chain: str = "solana",
+        runtime: str = "deno",
+        memory_mb: int = 128,
+        timeout_seconds: int = 30,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> ProcessorDeployResult:
+        """Deploy a serverless processor to the TEE grid.
+
+        Requires $SGL staking for higher tier limits.
+
+        Parameters
+        ----------
+        name:
+            Processor name (lowercase alphanumeric + hyphens, 2-64 chars).
+        code:
+            JavaScript/TypeScript source code with a default export function.
+        wallet_address:
+            Owner wallet address (must have $SGL staked for higher tiers).
+        chain:
+            Chain the wallet is on (default ``"solana"``).
+        runtime:
+            Execution runtime (``"deno"`` or ``"wasm"``).
+        memory_mb:
+            Memory allocation in MB (64, 128, 256, 512, 1024).
+        timeout_seconds:
+            Max execution time (1-300s, tier-dependent).
+        metadata:
+            Optional metadata dict attached to the processor.
+        """
+        body: Dict[str, Any] = {
+            "name": name,
+            "code": code,
+            "runtime": runtime,
+            "memory_mb": memory_mb,
+            "timeout_seconds": timeout_seconds,
+        }
+        if metadata:
+            body["metadata"] = metadata
+
+        # Set wallet auth headers
+        self._client.headers["X-Auth-Address"] = wallet_address
+        self._client.headers["X-Auth-Chain"] = chain
+        try:
+            data = self._request("POST", "/grid/processors", json=body)
+        finally:
+            self._client.headers.pop("X-Auth-Address", None)
+            self._client.headers.pop("X-Auth-Chain", None)
+
+        return ProcessorDeployResult.model_validate(data)
+
+    def invoke_processor(
+        self,
+        name: str,
+        input_data: Dict[str, Any],
+        *,
+        payment_header: str,
+        payment_token: str = "USDC",
+    ) -> ProcessorResult:
+        """Invoke a deployed processor with x402 payment.
+
+        Parameters
+        ----------
+        name:
+            Processor name.
+        input_data:
+            Input object passed to the handler function.
+        payment_header:
+            x402 payment header (JSON-encoded).
+        payment_token:
+            Payment token type (``"USDC"`` or ``"SGL"``).
+        """
+        body: Dict[str, Any] = {
+            "input": input_data,
+            "payment_token": payment_token,
+        }
+
+        self._client.headers["X-Payment"] = payment_header
+        try:
+            data = self._request(
+                "POST", f"/grid/processors/{name}/invoke", json=body,
+            )
+        finally:
+            self._client.headers.pop("X-Payment", None)
+
+        return ProcessorResult.model_validate(data)
+
+    def list_processors(
+        self,
+        *,
+        owner: Optional[str] = None,
+        page: int = 0,
+        limit: int = 50,
+    ) -> ProcessorListResponse:
+        """List deployed processors."""
+        params: Dict[str, Any] = {"page": page, "limit": limit}
+        if owner:
+            params["owner"] = owner
+        data = self._request("GET", "/grid/processors", params=params)
+        return ProcessorListResponse.model_validate(data)
+
+    def get_processor(self, processor_id: str) -> ProcessorInfo:
+        """Get details for a specific processor."""
+        data = self._request("GET", f"/grid/processors/{processor_id}")
+        return ProcessorInfo.model_validate(data)
+
+    def delete_processor(
+        self,
+        processor_id: str,
+        *,
+        wallet_address: str,
+    ) -> Dict[str, Any]:
+        """Delete a processor (must be the owner)."""
+        self._client.headers["X-Auth-Address"] = wallet_address
+        try:
+            data = self._request(
+                "DELETE", f"/grid/processors/{processor_id}",
+            )
+        finally:
+            self._client.headers.pop("X-Auth-Address", None)
+        return data
+
+    def get_processor_logs(
+        self,
+        processor_id: str,
+        *,
+        page: int = 0,
+        limit: int = 50,
+    ) -> ProcessorLogsResponse:
+        """Get invocation logs for a processor."""
+        params: Dict[str, Any] = {"page": page, "limit": limit}
+        data = self._request(
+            "GET",
+            f"/grid/processors/{processor_id}/logs",
+            params=params,
+        )
+        return ProcessorLogsResponse.model_validate(data)
 
     # -- lifecycle ----------------------------------------------------------
 

@@ -108,3 +108,93 @@ class JobResult(BaseModel):
     created_at: Optional[str] = None
     completed_at: Optional[str] = None
     error: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Processors
+# ---------------------------------------------------------------------------
+
+class ProcessorInfo(BaseModel):
+    """Processor descriptor returned by list/get endpoints."""
+    id: str
+    name: str
+    owner_wallet: str = ""
+    owner_chain: str = "solana"
+    runtime: str = "deno"
+    memory_mb: int = 128
+    timeout_seconds: int = 30
+    invocation_count: int = 0
+    last_invoked_at: Optional[str] = None
+    status: str = "active"
+    deployment_stake_sgl: float = 0.0
+    invoke_url: Optional[str] = None
+    created_at: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ProcessorDeployResult(BaseModel):
+    """Response from deploying a processor."""
+    id: str
+    name: str
+    runtime: str = "deno"
+    memory_mb: int = 128
+    timeout_seconds: int = 30
+    status: str = "active"
+    code_hash: str = ""
+    invoke_url: str = ""
+    tier: str = "free"
+    sgl_staked: float = 0.0
+    created_at: Optional[str] = None
+
+
+class ProcessorPayment(BaseModel):
+    """Payment details from a processor invocation."""
+    amount_usd: str = "0"
+    token: str = "USDC"
+    discount_pct: float = 0.0
+
+
+class ProcessorTeeInfo(BaseModel):
+    """TEE details from a processor invocation."""
+    node_id: str = ""
+    tee_type: str = ""
+    attestation_verified: bool = False
+
+
+class ProcessorResult(BaseModel):
+    """Response from invoking a processor."""
+    job_id: str
+    processor: str = ""
+    status: str = "pending"
+    output: Optional[Any] = None
+    duration_ms: Optional[int] = None
+    payment: Optional[ProcessorPayment] = None
+    tee: Optional[ProcessorTeeInfo] = None
+
+
+class ProcessorListResponse(BaseModel):
+    """Paginated processor listing."""
+    processors: List[ProcessorInfo] = Field(default_factory=list)
+    total: int = 0
+    page: int = 0
+    limit: int = 50
+
+
+class ProcessorLogEntry(BaseModel):
+    """Single invocation log entry."""
+    id: str = ""
+    processor_id: str = ""
+    job_id: str = ""
+    node_id: Optional[str] = None
+    duration_ms: Optional[int] = None
+    status: str = ""
+    error_message: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class ProcessorLogsResponse(BaseModel):
+    """Paginated processor logs."""
+    logs: List[ProcessorLogEntry] = Field(default_factory=list)
+    total: int = 0
+    page: int = 0
+    limit: int = 50

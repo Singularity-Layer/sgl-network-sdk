@@ -19,11 +19,19 @@ from .models import (
     ModelsResponse,
     PricingInfo,
     PricingResponse,
+    ProcessorDeployResult,
+    ProcessorInfo,
+    ProcessorListResponse,
+    ProcessorLogEntry,
+    ProcessorLogsResponse,
+    ProcessorPayment,
+    ProcessorResult,
+    ProcessorTeeInfo,
     TeeCapacity,
 )
 from .openai_compat import create_openai_client
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     # Client
@@ -36,7 +44,7 @@ __all__ = [
     "SGLAuthError",
     "SGLConnectionError",
     "SGLNotFoundError",
-    # Models
+    # Models — Grid
     "AttestationProof",
     "CapacityResponse",
     "JobResponse",
@@ -47,4 +55,13 @@ __all__ = [
     "PricingInfo",
     "PricingResponse",
     "TeeCapacity",
+    # Models — Processors
+    "ProcessorDeployResult",
+    "ProcessorInfo",
+    "ProcessorListResponse",
+    "ProcessorLogEntry",
+    "ProcessorLogsResponse",
+    "ProcessorPayment",
+    "ProcessorResult",
+    "ProcessorTeeInfo",
 ]
