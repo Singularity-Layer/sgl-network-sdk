@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+import json as _json
+from typing import Any, Dict, Iterator, List, Optional
 
 import httpx
 
+from . import e2e
 from .models import (
     AttestationProof,
     CapacityResponse,
@@ -91,6 +93,9 @@ class GridClient:
         headers: Dict[str, str] = {"Accept": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
+            # Grid credit billing reads X-API-Key; send both so reserve + chat
+            # resolve the paying wallet (credits mode) for end-to-end requests.
+            headers["X-API-Key"] = api_key
         self._client = httpx.Client(
             base_url=self._base_url,
             headers=headers,
@@ -203,6 +208,166 @@ class GridClient:
         """Retrieve the TEE attestation proof for a completed job."""
         data = self._request("GET", f"/grid/jobs/{job_id}/attestation")
         return AttestationProof.model_validate(data)
+
+    # -- chat (end-to-end encrypted) ---------------------------------------
+
+    def _reserve(self, model: str) -> Dict[str, Any]:
+        """Reserve a node + learn its X25519 key so we can seal the prompt to it."""
+        data = self._request("POST", "/v1/reserve", json={"model": model})
+        if not data.get("node_x25519_pubkey"):
+            raise SGLAPIError(503, "Reserved node does not support E2E encryption")
+        return data
+
+    def chat_completions(
+        self,
+        model: str,
+        messages: List[Dict[str, str]],
+        *,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+    ) -> Dict[str, Any]:
+        """End-to-end encrypted chat completion.
+
+        The prompt is sealed in this client to the serving node's key and only
+        decrypts inside its TEE — the orchestrator only relays ciphertext. Requires
+        ``api_key`` (credits); x402 pay-per-call isn't signed here (use the wallet
+        flow). Returns an OpenAI-style dict with an extra ``attestation`` field.
+        """
+        reservation = self._reserve(model)
+        resp_sk, resp_pub = e2e.new_response_keypair()
+        sealed_ct, eph = e2e.seal_input(
+            reservation["node_x25519_pubkey"], resp_pub,
+            _json.dumps({"messages": messages, "temperature": temperature, "max_tokens": max_tokens}).encode(),
+        )
+        body = {
+            "reservation_token": reservation["reservation_token"],
+            "max_tokens": max_tokens,  # cleartext, only used to quote the x402 price
+            "enc": {
+                "ciphertext": sealed_ct,
+                "client_ephemeral_pubkey": eph,
+                "client_response_pubkey": resp_pub,
+                "algorithm": e2e.ALGO_V2,
+            },
+        }
+        try:
+            data = self._request("POST", "/v1/chat/completions", json=body)
+        except SGLAPIError as err:
+            if err.status_code == 402:
+                raise SGLAPIError(402, "Payment required — pass api_key (credits); the Python GridClient does not sign x402 payments.") from err
+            raise
+
+        sealed = data.get("sealed_result")
+        if not sealed:
+            raise SGLAPIError(500, "No sealed result returned")
+        plain = e2e.open_output(resp_sk, resp_pub, sealed["ephemeral_public_key"], sealed["ciphertext"])
+        parsed = _json.loads(plain)
+        return {
+            "id": data.get("id", ""),
+            "object": "chat.completion",
+            "model": model,
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": parsed.get("content", "")}, "finish_reason": "stop"}],
+            "usage": data.get("usage") or parsed.get("usage", {}),
+            "attestation": {
+                "node_id": reservation.get("node_id"),
+                "tee_type": reservation.get("tee_type"),
+                "verified": bool(reservation.get("attestation_verified", False)),
+            },
+        }
+
+    def chat_completion_stream(
+        self,
+        model: str,
+        messages: List[Dict[str, str]],
+        *,
+        temperature: float = 0.7,
+        max_tokens: int = 512,
+    ) -> Iterator[str]:
+        """Yield decoded text as it streams (end-to-end encrypted). Requires
+        ``api_key`` (credits). Each chunk is decrypted and its ordering +
+        termination verified (a truncated stream raises). If streaming isn't
+        enabled server-side, the whole reply is yielded as one chunk."""
+        reservation = self._reserve(model)
+        resp_sk, resp_pub = e2e.new_response_keypair()
+        nonce = e2e.random_nonce_b58()
+        sealed_ct, eph = e2e.seal_input(
+            reservation["node_x25519_pubkey"], resp_pub,
+            _json.dumps({"messages": messages, "temperature": temperature, "max_tokens": max_tokens, "stream": True, "nonce": nonce}).encode(),
+        )
+        body = {
+            "reservation_token": reservation["reservation_token"],
+            "stream": True,
+            "max_tokens": max_tokens,
+            "enc": {
+                "ciphertext": sealed_ct,
+                "client_ephemeral_pubkey": eph,
+                "client_response_pubkey": resp_pub,
+                "algorithm": e2e.ALGO_V2,
+            },
+        }
+        with self._client.stream("POST", "/v1/chat/completions", json=body) as resp:
+            if resp.status_code != 200:
+                resp.read()
+                if resp.status_code == 402:
+                    raise SGLAPIError(402, "Payment required — pass api_key (credits); the Python GridClient does not sign x402 payments.")
+                msg = resp.text
+                try:
+                    err = resp.json().get("error")
+                    msg = err.get("message", msg) if isinstance(err, dict) else (err or msg)
+                except Exception:
+                    pass
+                raise SGLAPIError(resp.status_code, str(msg))
+
+            if "text/event-stream" not in resp.headers.get("content-type", ""):
+                resp.read()
+                data = _json.loads(resp.text)
+                sealed = data.get("sealed_result")
+                if not sealed:
+                    raise SGLAPIError(500, "No sealed result returned")
+                plain = e2e.open_output(resp_sk, resp_pub, sealed["ephemeral_public_key"], sealed["ciphertext"])
+                content = _json.loads(plain).get("content", "")
+                if content:
+                    yield content
+                return
+
+            expected_seq = 0
+            out_key = None
+            stream_eph = None
+            saw_final = False
+            for line in resp.iter_lines():
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("event: error"):
+                    raise SGLAPIError(502, "stream aborted by server")
+                if line.startswith(":") or not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    continue
+                try:
+                    chunk = _json.loads(payload)
+                except _json.JSONDecodeError as exc:
+                    raise SGLAPIError(502, "malformed stream chunk") from exc
+                seq = chunk.get("seq")
+                if seq is None or "ct" not in chunk:
+                    raise SGLAPIError(502, "invalid stream chunk (missing seq/ciphertext)")
+                if seq != expected_seq:
+                    raise SGLAPIError(502, f"stream out of order (expected {expected_seq}, got {seq})")
+                if seq == 0:
+                    stream_eph = chunk.get("eph")
+                    if not stream_eph:
+                        raise SGLAPIError(502, "stream chunk 0 missing ephemeral key")
+                    out_key = e2e.stream_out_key(resp_sk, stream_eph)
+                is_final = chunk.get("final") is True
+                text = e2e.open_stream_chunk(out_key, resp_pub, stream_eph, nonce, seq, is_final, chunk["ct"]).decode()
+                if text:
+                    yield text
+                expected_seq += 1
+                if is_final:
+                    saw_final = True
+                    break
+            if not saw_final:
+                raise SGLAPIError(502, "stream ended before final chunk (truncated)")
 
     # -- processor endpoints -----------------------------------------------
 
