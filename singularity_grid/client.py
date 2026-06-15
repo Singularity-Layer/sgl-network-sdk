@@ -218,17 +218,21 @@ class GridClient:
         data = self._request("GET", q)
         return data.get("providers", [])
 
-    def _reserve(self, model: str, cluster: Optional[str] = None, node: Optional[str] = None) -> Dict[str, Any]:
+    def _reserve(self, model: str, cluster: Optional[str] = None, node: Optional[str] = None, max_price: Optional[float] = None) -> Dict[str, Any]:
         """Reserve a node + learn its X25519 key so we can seal the prompt to it.
 
         When ``cluster`` is given, a node *inside that cluster* (a Tokenised Compute
         Market) is reserved. When ``node`` is given, that specific provider is reserved.
+        ``max_price`` (blended USD/1M) caps the per-token rate — only nodes at/under
+        it are eligible and the request is never billed above it.
         """
         payload: Dict[str, Any] = {"model": model}
         if cluster is not None:
             payload["cluster"] = cluster
         if node is not None:
             payload["node"] = node
+        if max_price is not None:
+            payload["max_price"] = max_price
         data = self._request("POST", "/v1/reserve", json=payload)
         if not data.get("node_x25519_pubkey"):
             raise SGLAPIError(503, "Reserved node does not support E2E encryption")
@@ -244,6 +248,7 @@ class GridClient:
         cluster: Optional[str] = None,
         node: Optional[str] = None,
         pay_in_coin: bool = False,
+        max_price: Optional[float] = None,
     ) -> Dict[str, Any]:
         """End-to-end encrypted chat completion.
 
@@ -262,7 +267,7 @@ class GridClient:
             in that coin (the believer lane) instead of USDC/credits. Falls back to
             USDC if the coin's oracle price is untrusted.
         """
-        reservation = self._reserve(model, cluster=cluster, node=node)
+        reservation = self._reserve(model, cluster=cluster, node=node, max_price=max_price)
         resp_sk, resp_pub = e2e.new_response_keypair()
         sealed_ct, eph = e2e.seal_input(
             reservation["node_x25519_pubkey"], resp_pub,
@@ -312,12 +317,16 @@ class GridClient:
         *,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        cluster: Optional[str] = None,
+        node: Optional[str] = None,
+        max_price: Optional[float] = None,
     ) -> Iterator[str]:
         """Yield decoded text as it streams (end-to-end encrypted). Requires
         ``api_key`` (credits). Each chunk is decrypted and its ordering +
         termination verified (a truncated stream raises). If streaming isn't
-        enabled server-side, the whole reply is yielded as one chunk."""
-        reservation = self._reserve(model)
+        enabled server-side, the whole reply is yielded as one chunk.
+        Supports ``cluster``/``node``/``max_price`` like ``chat_completions``."""
+        reservation = self._reserve(model, cluster=cluster, node=node, max_price=max_price)
         resp_sk, resp_pub = e2e.new_response_keypair()
         nonce = e2e.random_nonce_b58()
         sealed_ct, eph = e2e.seal_input(
