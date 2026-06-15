@@ -211,9 +211,25 @@ class GridClient:
 
     # -- chat (end-to-end encrypted) ---------------------------------------
 
-    def _reserve(self, model: str) -> Dict[str, Any]:
-        """Reserve a node + learn its X25519 key so we can seal the prompt to it."""
-        data = self._request("POST", "/v1/reserve", json={"model": model})
+    def providers(self, model: str, cluster: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List nodes serving ``model`` with their effective price + reputation,
+        cheapest first — pick one and pass its ``node_id`` to ``chat_completions(node=...)``."""
+        q = f"/v1/providers?model={model}" + (f"&cluster={cluster}" if cluster else "")
+        data = self._request("GET", q)
+        return data.get("providers", [])
+
+    def _reserve(self, model: str, cluster: Optional[str] = None, node: Optional[str] = None) -> Dict[str, Any]:
+        """Reserve a node + learn its X25519 key so we can seal the prompt to it.
+
+        When ``cluster`` is given, a node *inside that cluster* (a Tokenised Compute
+        Market) is reserved. When ``node`` is given, that specific provider is reserved.
+        """
+        payload: Dict[str, Any] = {"model": model}
+        if cluster is not None:
+            payload["cluster"] = cluster
+        if node is not None:
+            payload["node"] = node
+        data = self._request("POST", "/v1/reserve", json=payload)
         if not data.get("node_x25519_pubkey"):
             raise SGLAPIError(503, "Reserved node does not support E2E encryption")
         return data
@@ -225,6 +241,9 @@ class GridClient:
         *,
         temperature: float = 0.7,
         max_tokens: int = 512,
+        cluster: Optional[str] = None,
+        node: Optional[str] = None,
+        pay_in_coin: bool = False,
     ) -> Dict[str, Any]:
         """End-to-end encrypted chat completion.
 
@@ -232,14 +251,24 @@ class GridClient:
         decrypts inside its TEE — the orchestrator only relays ciphertext. Requires
         ``api_key`` (credits); x402 pay-per-call isn't signed here (use the wallet
         flow). Returns an OpenAI-style dict with an extra ``attestation`` field.
+
+        Parameters
+        ----------
+        cluster:
+            Optional cluster slug — route to a node inside that Tokenised Compute
+            Market (only nodes that joined the cluster serve it).
+        pay_in_coin:
+            When ``True`` and the cluster has a tradeable coin, pay for the request
+            in that coin (the believer lane) instead of USDC/credits. Falls back to
+            USDC if the coin's oracle price is untrusted.
         """
-        reservation = self._reserve(model)
+        reservation = self._reserve(model, cluster=cluster, node=node)
         resp_sk, resp_pub = e2e.new_response_keypair()
         sealed_ct, eph = e2e.seal_input(
             reservation["node_x25519_pubkey"], resp_pub,
             _json.dumps({"messages": messages, "temperature": temperature, "max_tokens": max_tokens}).encode(),
         )
-        body = {
+        body: Dict[str, Any] = {
             "reservation_token": reservation["reservation_token"],
             "max_tokens": max_tokens,  # cleartext, only used to quote the x402 price
             "enc": {
@@ -249,6 +278,8 @@ class GridClient:
                 "algorithm": e2e.ALGO_V2,
             },
         }
+        if pay_in_coin:
+            body["pay_in_coin"] = True
         try:
             data = self._request("POST", "/v1/chat/completions", json=body)
         except SGLAPIError as err:
