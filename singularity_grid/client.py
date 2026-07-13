@@ -310,6 +310,45 @@ class GridClient:
             },
         }
 
+    def embeddings(
+        self,
+        model: str,
+        input: Any,
+        *,
+        dimensions: Optional[int] = None,
+        input_type: Optional[str] = None,
+        tier: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create embeddings via the OpenAI-compatible ``/v1/embeddings`` endpoint.
+
+        ``input`` is a string or list of strings. ``dimensions`` truncates Matryoshka
+        models (e.g. nomic ``768→256``); ``input_type`` (``'query'`` | ``'document'``)
+        hints asymmetric retrieval models. Billed on input tokens only — there is no
+        generation. Requires ``api_key`` (credits); x402 pay-per-call isn't signed by
+        this client. Returns an OpenAI-style dict:
+        ``{"object": "list", "data": [{"index", "embedding"}, ...], "model", "usage"}``.
+        """
+        body: Dict[str, Any] = {"model": model, "input": input}
+        if dimensions is not None:
+            body["dimensions"] = dimensions
+        if input_type is not None:
+            body["input_type"] = input_type
+        if tier is not None:
+            body["tier"] = tier
+        try:
+            return self._request("POST", "/v1/embeddings", json=body)
+        except SGLAPIError as err:
+            if err.status_code == 402:
+                raise SGLAPIError(402, "Payment required — pass api_key (credits); the Python GridClient does not sign x402 payments.") from err
+            raise
+
+    def embed(self, model: str, input: Any, **kwargs: Any) -> List[List[float]]:
+        """Convenience wrapper around :meth:`embeddings` that returns just the list of
+        vectors, ordered to match ``input``."""
+        data = self.embeddings(model, input, **kwargs)
+        rows = sorted(data.get("data", []), key=lambda r: r.get("index", 0))
+        return [r["embedding"] for r in rows]
+
     def chat_completion_stream(
         self,
         model: str,
