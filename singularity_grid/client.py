@@ -30,6 +30,18 @@ DEFAULT_BASE_URL = "https://grid.x402compute.cc"
 DEFAULT_TIMEOUT = 60.0
 
 
+def _count_images(messages: List[Dict[str, Any]]) -> int:
+    """Count image_url content parts across messages — declared (unsealed) at reserve so a
+    vision request can be quoted + routed to a vision node without the orchestrator seeing
+    the image (the image itself stays inside the sealed prompt)."""
+    n = 0
+    for m in messages:
+        content = m.get("content")
+        if isinstance(content, list):
+            n += sum(1 for p in content if isinstance(p, dict) and p.get("type") == "image_url")
+    return n
+
+
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
@@ -218,13 +230,15 @@ class GridClient:
         data = self._request("GET", q)
         return data.get("providers", [])
 
-    def _reserve(self, model: str, cluster: Optional[str] = None, node: Optional[str] = None, max_price: Optional[float] = None) -> Dict[str, Any]:
+    def _reserve(self, model: str, cluster: Optional[str] = None, node: Optional[str] = None, max_price: Optional[float] = None, image_count: int = 0) -> Dict[str, Any]:
         """Reserve a node + learn its X25519 key so we can seal the prompt to it.
 
         When ``cluster`` is given, a node *inside that cluster* (a Tokenised Compute
         Market) is reserved. When ``node`` is given, that specific provider is reserved.
         ``max_price`` (blended USD/1M) caps the per-token rate — only nodes at/under
-        it are eligible and the request is never billed above it.
+        it are eligible and the request is never billed above it. ``image_count`` (declared
+        here, unsealed) lets a vision request be quoted without the orchestrator seeing the
+        image — the image stays inside the sealed prompt — and routes to a vision-capable node.
         """
         payload: Dict[str, Any] = {"model": model}
         if cluster is not None:
@@ -233,6 +247,8 @@ class GridClient:
             payload["node"] = node
         if max_price is not None:
             payload["max_price"] = max_price
+        if image_count > 0:
+            payload["image_count"] = image_count
         data = self._request("POST", "/v1/reserve", json=payload)
         if not data.get("node_x25519_pubkey"):
             raise SGLAPIError(503, "Reserved node does not support E2E encryption")
@@ -241,7 +257,7 @@ class GridClient:
     def chat_completions(
         self,
         model: str,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         *,
         temperature: float = 0.7,
         max_tokens: int = 512,
@@ -251,6 +267,11 @@ class GridClient:
         max_price: Optional[float] = None,
     ) -> Dict[str, Any]:
         """End-to-end encrypted chat completion.
+
+        Vision: to ask about an image, give a message an OpenAI-style content-parts list,
+        e.g. ``{"role": "user", "content": [{"type": "text", "text": "..."},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}]}`` with a
+        vision model. The image rides inside the sealed prompt; only its count is disclosed.
 
         The prompt is sealed in this client to the serving node's key and only
         decrypts inside its TEE — the orchestrator only relays ciphertext. Requires
@@ -267,7 +288,7 @@ class GridClient:
             in that coin (the believer lane) instead of USDC/credits. Falls back to
             USDC if the coin's oracle price is untrusted.
         """
-        reservation = self._reserve(model, cluster=cluster, node=node, max_price=max_price)
+        reservation = self._reserve(model, cluster=cluster, node=node, max_price=max_price, image_count=_count_images(messages))
         resp_sk, resp_pub = e2e.new_response_keypair()
         sealed_ct, eph = e2e.seal_input(
             reservation["node_x25519_pubkey"], resp_pub,
@@ -352,7 +373,7 @@ class GridClient:
     def chat_completion_stream(
         self,
         model: str,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         *,
         temperature: float = 0.7,
         max_tokens: int = 512,
