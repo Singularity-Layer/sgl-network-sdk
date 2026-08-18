@@ -65,3 +65,4 @@ __all__ = [
     "ProcessorResult",
     "ProcessorTeeInfo",
 ]
+from .vault import VaultClient, VaultError, encrypt_envelope, decrypt_envelope
