@@ -28,10 +28,16 @@ from .models import (
     ProcessorResult,
     ProcessorTeeInfo,
     TeeCapacity,
+    TrainArtifacts,
+    TrainDatasetApproval,
+    TrainDatasetInfo,
+    TrainRunCreated,
+    TrainRunInfo,
 )
 from .openai_compat import create_openai_client
+from .train import TrainAPI
 
-__version__ = "0.2.0"
+__version__ = "0.7.0"
 
 __all__ = [
     # Client
@@ -64,4 +70,11 @@ __all__ = [
     "ProcessorPayment",
     "ProcessorResult",
     "ProcessorTeeInfo",
+    # Managed training
+    "TrainAPI",
+    "TrainArtifacts",
+    "TrainDatasetApproval",
+    "TrainDatasetInfo",
+    "TrainRunCreated",
+    "TrainRunInfo",
 ]

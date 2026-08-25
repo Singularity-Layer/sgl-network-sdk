@@ -198,3 +198,71 @@ class ProcessorLogsResponse(BaseModel):
     total: int = 0
     page: int = 0
     limit: int = 50
+
+
+# ─── Managed training ──────────────────────────────────────────────────────────
+
+
+class TrainDatasetInfo(BaseModel):
+    """A training dataset row (GET /training/datasets/:id)."""
+    id: str = ""
+    source: str = ""                       # 'upload' | 'synth'
+    row_count: Optional[int] = None
+    bytes: Optional[int] = None
+    schema_ok: bool = False
+    approved_at: Optional[str] = None
+    created_at: str = ""
+    synth_status: Optional[str] = None     # unpaid|pending|generating|complete|failed
+
+
+class TrainDatasetApproval(BaseModel):
+    """Result of the approval gate (POST /training/datasets/:id/approve)."""
+    dataset_id: str = ""
+    approved_at: str = ""
+    row_count: int = 0
+    total_rows: int = 0
+    dropped: int = 0
+    reasons: Dict[str, int] = Field(default_factory=dict)
+
+
+class TrainRunInfo(BaseModel):
+    """A training run (GET /training/runs/:id). `result` carries the runner report
+    (baseline/final eval_loss+perplexity, improved, gguf_ok) once completed."""
+    id: str = ""
+    kind: str = ""
+    status: str = ""
+    outcome: str = ""
+    base_model: str = ""
+    dataset_id: str = ""
+    gpu_plan_id: str = ""
+    budget_hours: float = 0
+    budget_credits: Optional[float] = None
+    deadline_at: Optional[str] = None
+    provisioned_at: Optional[str] = None
+    last_heartbeat_at: Optional[str] = None
+    exit_code: Optional[int] = None
+    progress: Optional[Dict[str, Any]] = None   # {phase, pct: 0..1|None, at}
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class TrainRunCreated(BaseModel):
+    """201 from POST /training/runs."""
+    run_id: str = ""
+    status: str = ""
+    charged: float = 0
+    billed_hours: float = 0
+    gpu: str = ""
+    base_model: str = ""
+    note: str = ""
+
+
+class TrainArtifacts(BaseModel):
+    """Presigned downloads (POST /training/runs/:id/deploy target=download)."""
+    run_id: str = ""
+    target: str = "download"
+    urls: Dict[str, str] = Field(default_factory=dict)   # adapter, report, gguf?
+    expires_in: int = 0
+    gguf_available: bool = False

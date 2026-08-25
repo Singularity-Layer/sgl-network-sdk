@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json as _json
-from typing import Any, Dict, Iterator, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional
 
 import httpx
 
 from . import e2e
+
+if TYPE_CHECKING:
+    from .train import TrainAPI
 from .models import (
     AttestationProof,
     CapacityResponse,
@@ -64,6 +67,24 @@ class SGLConnectionError(SGLError):
     """Raised when the orchestrator is unreachable."""
 
 
+def _raise_for_status(response: httpx.Response) -> None:
+    """Map an error response to the SGLError family (shared by GridClient and TrainAPI)."""
+    if response.status_code < 400:
+        return
+    body: Optional[Dict[str, Any]] = None
+    message = response.text
+    try:
+        body = response.json()
+        message = body.get("error", {}).get("message", message) if isinstance(body.get("error"), dict) else body.get("error", message)
+    except Exception:
+        pass
+    if response.status_code in (401, 403):
+        raise SGLAuthError(response.status_code, str(message), body)
+    if response.status_code == 404:
+        raise SGLNotFoundError(response.status_code, str(message), body)
+    raise SGLAPIError(response.status_code, str(message), body)
+
+
 # ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
@@ -78,6 +99,8 @@ class GridClient:
         Not required for public endpoints like ``capacity()``.
     base_url:
         Override the default orchestrator URL.
+    compute_url:
+        Override the default compute worker URL (used by ``client.train``).
     timeout:
         Request timeout in seconds (default 60).
     """
@@ -86,10 +109,13 @@ class GridClient:
         self,
         api_key: Optional[str] = None,
         base_url: str = DEFAULT_BASE_URL,
+        compute_url: str = "https://compute.x402layer.cc",
         timeout: float = DEFAULT_TIMEOUT,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
+        self._compute_url = compute_url
+        self._train: Optional[Any] = None
         headers: Dict[str, str] = {"Accept": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -126,20 +152,7 @@ class GridClient:
                 f"Request to {self._base_url}{path} timed out: {exc}"
             ) from exc
 
-        if response.status_code >= 400:
-            body: Optional[Dict[str, Any]] = None
-            message = response.text
-            try:
-                body = response.json()
-                message = body.get("error", {}).get("message", message) if isinstance(body.get("error"), dict) else body.get("error", message)
-            except Exception:
-                pass
-
-            if response.status_code in (401, 403):
-                raise SGLAuthError(response.status_code, str(message), body)
-            if response.status_code == 404:
-                raise SGLNotFoundError(response.status_code, str(message), body)
-            raise SGLAPIError(response.status_code, str(message), body)
+        _raise_for_status(response)
 
         if response.status_code == 204:
             return {}
@@ -592,6 +605,16 @@ class GridClient:
             params=params,
         )
         return ProcessorLogsResponse.model_validate(data)
+
+    # -- managed training -----------------------------------------------------
+
+    @property
+    def train(self) -> "TrainAPI":
+        """Managed fine-tuning namespace (requires api_key). See singularity_grid.train."""
+        if self._train is None:
+            from .train import TrainAPI
+            self._train = TrainAPI(self._api_key, self._compute_url, timeout=DEFAULT_TIMEOUT)
+        return self._train
 
     # -- lifecycle ----------------------------------------------------------
 

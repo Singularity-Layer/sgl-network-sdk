@@ -101,6 +101,35 @@ print(f"TEE verified: {attestation.verified}")
 | `get_job(job_id)` | Yes | Get job status and result |
 | `get_attestation(job_id)` | Yes | Get TEE attestation proof |
 
+### Managed training (`client.train`)
+
+Fine-tune a small open model on your data. Requires an API key (compute credits).
+Prepaid GPU blocks — early completion and manual cancel do not refund.
+
+```python
+from singularity_grid import GridClient
+
+client = GridClient(api_key="sk_...")
+
+ds = client.train.create_dataset("data.jsonl")          # upload → validate → approve
+run = client.train.create_run(ds.dataset_id, "qwen2.5-0.5b-instruct",
+                              gpu="runpod-rtx-3090-24g", hours=2)
+final = client.train.wait(run.run_id)                   # polls until terminal
+print(final.result["improved"], final.result["final"]["eval_loss"])
+client.train.download(run.run_id, "./artifacts")        # adapter.tar.gz, report.json, model.gguf
+```
+
+Or synthesize the dataset from a prompt (async; approval stays explicit):
+
+```python
+job = client.train.synthesize("Terse SQL tutor", seeds=[...5-20 chat rows...])
+# poll client.train.dataset(job["dataset_id"]).synth_status until "complete"
+client.train.approve(job["dataset_id"])
+```
+
+Catalog (models, GPU prices, limits): `client.train.catalog()`. Deploy in v1 is
+download-only — there is no Hugging Face push yet.
+
 ### Exceptions
 
 | Exception | When |
