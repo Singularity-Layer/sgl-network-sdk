@@ -190,6 +190,51 @@ def test_download_writes_artifacts(tmp_path, monkeypatch):
     assert (tmp_path / "adapter.tar.gz").read_bytes() == b"bytes-https://r2.test/a"
 
 
+def test_download_skips_unknown_keys(tmp_path, monkeypatch):
+    """Verify that path-traversal hostile keys like ../../evil are skipped (not written)."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/deploy")
+        assert json.loads(request.content) == {"target": "download"}
+        return httpx.Response(200, json={
+            "run_id": "r1", "target": "download",
+            "urls": {
+                "adapter": "https://r2.test/a",
+                "../../evil": "https://r2.test/evil",  # Hostile key: path traversal attempt
+                "/etc/passwd": "https://r2.test/passwd",  # Hostile key: absolute path
+                "report": "https://r2.test/r",
+            },
+            "expires_in": 3600, "gguf_available": False,
+        })
+
+    class FakeStreamResponse:
+        def __init__(self, url):
+            self.status_code = 200
+            self._content = b"bytes-" + url.encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def iter_bytes(self):
+            yield self._content
+
+    def fake_stream(method, url, **kwargs):
+        assert method == "GET"
+        return FakeStreamResponse(url)
+
+    monkeypatch.setattr("singularity_grid.train.httpx.stream", fake_stream)
+
+    written = make_client(handler).train.download("r1", tmp_path)
+    # Only whitelisted keys (adapter, report) should be written; hostile keys are skipped.
+    assert sorted(p.name for p in written) == ["adapter.tar.gz", "report.json"]
+    # Verify no traversal happened: ../../evil should not exist anywhere.
+    assert not (tmp_path / "../../evil").resolve().exists()  # safety check: no escape
+    assert not (tmp_path / "evil").exists()
+    assert not (tmp_path / "etc").exists()
+
+
 def test_no_fake_hf_surface():
     t = make_client(lambda r: httpx.Response(500)).train
     assert not hasattr(t, "push_to_hub")

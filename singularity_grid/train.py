@@ -26,6 +26,10 @@ DEFAULT_COMPUTE_URL = "https://compute.x402layer.cc"
 
 _LIVE_STATUSES = {"draft", "dataset_ready", "paid", "provisioning", "running", "destroying"}
 
+# Allowlist of artifact keys (defense against path traversal from compromised worker).
+_ARTIFACT_KEYS = {"adapter", "gguf", "report"}
+_DEFAULT_NAMES = {"adapter": "adapter.tar.gz", "report": "report.json", "gguf": "model.gguf"}
+
 
 class TrainAPI:
     def __init__(self, api_key: Optional[str], compute_url: str = DEFAULT_COMPUTE_URL, timeout: float = 60.0) -> None:
@@ -125,8 +129,13 @@ class TrainAPI:
         data = self._request("GET", f"/training/runs/{run_id}")
         return TrainRunInfo.model_validate(data.get("run", {}))
 
-    def wait(self, run_id: str, poll_s: float = 15.0, timeout_s: Optional[float] = None) -> TrainRunInfo:
-        """Poll run(run_id) until terminal; returns the final run."""
+    def wait(self, run_id: str, poll_s: float = 15.0, timeout_s: Optional[float] = 3600) -> TrainRunInfo:
+        """Poll run(run_id) until terminal; returns the final run.
+
+        Args:
+            run_id: The run to monitor.
+            poll_s: Polling interval in seconds.
+            timeout_s: Maximum wait time in seconds; defaults to 1 hour. Pass None for unbounded."""
         started = time.monotonic()
         while True:
             r = self.run(run_id)
@@ -157,10 +166,14 @@ class TrainAPI:
         art = self.artifacts(run_id)
         dest_dir = Path(dest)
         dest_dir.mkdir(parents=True, exist_ok=True)
-        names = {"adapter": "adapter.tar.gz", "report": "report.json", "gguf": "model.gguf"}
         written: List[Path] = []
         for key, url in art.urls.items():
-            out = dest_dir / names.get(key, key)
+            # Allowlist keys (defense against path traversal from compromised worker).
+            if key not in _ARTIFACT_KEYS:
+                continue
+            # Guard caller-supplied names (if any) by extracting basename only.
+            filename = _DEFAULT_NAMES[key]
+            out = dest_dir / filename
             with httpx.stream("GET", url) as resp:  # presigned — never send the API key
                 if resp.status_code >= 400:
                     from .client import SGLAPIError
