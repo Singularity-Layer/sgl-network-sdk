@@ -66,7 +66,7 @@ class TrainAPI:
         (422) with the server's validation payload on schema failure."""
         data = file if isinstance(file, bytes) else Path(file).read_bytes()
         pres = self._request("POST", "/training/datasets/presign", {"bytes": len(data)})
-        put = httpx.put(pres["upload_url"], content=data)  # presigned — never send the API key
+        put = httpx.put(pres["upload_url"], content=data, timeout=600)  # presigned — never send the API key
         if put.status_code >= 400:
             from .client import SGLAPIError
             raise SGLAPIError(put.status_code, "dataset upload failed")
@@ -174,7 +174,7 @@ class TrainAPI:
             # Guard caller-supplied names (if any) by extracting basename only.
             filename = _DEFAULT_NAMES[key]
             out = dest_dir / filename
-            with httpx.stream("GET", url) as resp:  # presigned — never send the API key
+            with httpx.stream("GET", url, timeout=600) as resp:  # presigned — never send the API key
                 if resp.status_code >= 400:
                     from .client import SGLAPIError
                     raise SGLAPIError(resp.status_code, f"artifact download failed for {key}")
