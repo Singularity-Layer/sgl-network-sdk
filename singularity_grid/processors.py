@@ -36,7 +36,8 @@ read an API key as an ownership claim. Anonymous buyers pay with x402 instead; s
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
+from urllib.parse import urlparse
 
 import httpx
 
@@ -51,6 +52,27 @@ from .client import (
 
 PROCESSORS_BASE_URL = "https://processors.x402compute.cc"
 DEFAULT_TIMEOUT = 60.0
+
+
+def _assert_safe_base_url(raw: str) -> str:
+    """A base URL override must not become a way to post the management key somewhere else.
+
+    The key is long-lived, does not expire, and grants full control of the caller's processors,
+    so an ``http://`` or attacker-supplied origin is a credential disclosure rather than a
+    misconfiguration. Plain HTTP is allowed only for loopback, which is how you point this at a
+    local worker during development.
+    """
+    parsed = urlparse(raw)
+    if not parsed.scheme or not parsed.hostname:
+        raise ValueError(f"ProcessorsClient base_url is not a valid URL: {raw}")
+    loopback = parsed.hostname in ("localhost", "127.0.0.1", "::1")
+    if parsed.scheme != "https" and not (parsed.scheme == "http" and loopback):
+        raise ValueError(
+            f"ProcessorsClient base_url must be https (or http on localhost); got "
+            f"{parsed.scheme}://{parsed.hostname}. The API key is a long-lived full-control "
+            "credential and must not be sent in the clear."
+        )
+    return raw.rstrip("/")
 
 __all__ = ["ProcessorsClient", "PROCESSORS_BASE_URL"]
 
@@ -72,7 +94,7 @@ class ProcessorsClient:
         timeout: float = DEFAULT_TIMEOUT,
     ) -> None:
         self._api_key = api_key
-        self._base_url = base_url.rstrip("/")
+        self._base_url = _assert_safe_base_url(base_url)
         headers: Dict[str, str] = {"Accept": "application/json"}
         if api_key:
             headers["X-API-Key"] = api_key
@@ -89,9 +111,21 @@ class ProcessorsClient:
         *,
         json: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
+        send_api_key: bool = True,
     ) -> Any:
+        # Routes that carry their OWN credential — the public catalogue, and the two run paths,
+        # which authenticate with an invoke token or an x402 payment — pass send_api_key=False,
+        # so a long-lived management key is not scattered through request logs and traces on
+        # calls that have no use for it.
+        # httpx merges the client's default headers at build time, so the key has to be popped
+        # off the built request — passing an override in `headers` would still send it.
         try:
-            response = self._client.request(method, path, json=json, headers=headers)
+            if send_api_key or not self._api_key:
+                response = self._client.request(method, path, json=json, headers=headers)
+            else:
+                request = self._client.build_request(method, path, json=json, headers=headers)
+                request.headers.pop("X-API-Key", None)
+                response = self._client.send(request)
         except httpx.ConnectError as exc:
             raise SGLConnectionError(
                 f"Could not connect to {self._base_url}: {exc}"
@@ -137,8 +171,14 @@ class ProcessorsClient:
     # -- discovery ----------------------------------------------------------
 
     def catalogue(self) -> Dict[str, Any]:
-        """The public catalogue. Needs no credential."""
-        return self._request("GET", "/processors")
+        """The public catalogue.
+
+        Sends NO credential, even when the client holds one. ``GET /processors`` is owner-scoped
+        when a key is presented and public otherwise, so passing the key here would silently
+        return your own processors instead of the catalogue — the opposite of what the name
+        promises. Use :meth:`list` when you want yours.
+        """
+        return self._request("GET", "/processors", send_api_key=False)
 
     def list(self) -> Dict[str, Any]:
         """Processors owned by this key's wallet. Needs ``processors:read``."""
@@ -275,6 +315,7 @@ class ProcessorsClient:
             f"/processors/{slug}/run",
             json={"input": input},
             headers={"Authorization": f"Bearer {invoke_token}"},
+            send_api_key=False,
         )
 
     def run_with_payment(
@@ -305,5 +346,9 @@ class ProcessorsClient:
         if accept_networks:
             headers["X-Accept-Networks"] = ",".join(accept_networks)
         return self._request(
-            "POST", f"/processors/{slug}/run", json={"input": input}, headers=headers or None
+            "POST",
+            f"/processors/{slug}/run",
+            json={"input": input},
+            headers=headers or None,
+            send_api_key=False,
         )
