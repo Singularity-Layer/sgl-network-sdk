@@ -54,6 +54,11 @@ PROCESSORS_BASE_URL = "https://processors.x402compute.cc"
 DEFAULT_TIMEOUT = 60.0
 
 
+def _is_loopback(hostname: str) -> bool:
+    # urlparse strips the brackets from an IPv6 literal, so "::1" is what appears here.
+    return hostname in ("localhost", "127.0.0.1", "::1", "[::1]")
+
+
 def _assert_safe_base_url(raw: str) -> str:
     """A base URL override must not become a way to post the management key somewhere else.
 
@@ -65,14 +70,33 @@ def _assert_safe_base_url(raw: str) -> str:
     parsed = urlparse(raw)
     if not parsed.scheme or not parsed.hostname:
         raise ValueError(f"ProcessorsClient base_url is not a valid URL: {raw}")
-    loopback = parsed.hostname in ("localhost", "127.0.0.1", "::1")
-    if parsed.scheme != "https" and not (parsed.scheme == "http" and loopback):
+    if parsed.scheme != "https" and not (parsed.scheme == "http" and _is_loopback(parsed.hostname)):
         raise ValueError(
             f"ProcessorsClient base_url must be https (or http on localhost); got "
             f"{parsed.scheme}://{parsed.hostname}. The API key is a long-lived full-control "
             "credential and must not be sent in the clear."
         )
     return raw.rstrip("/")
+
+
+def _key_allowed_on_host(raw: str) -> bool:
+    """May the management key be sent to this host?
+
+    https alone is not the question. ``https://attacker.example`` is a perfectly valid TLS
+    origin, and if ``base_url`` is ever wired to an environment variable — which is exactly how
+    people configure a staging host — then influencing that variable is enough to harvest a
+    long-lived full-control credential. So the key travels only to the official host or to
+    loopback unless the caller says otherwise, in one explicit flag they cannot set by accident.
+    """
+    parsed = urlparse(raw)
+    official = urlparse(PROCESSORS_BASE_URL)
+    if (parsed.scheme, parsed.hostname, parsed.port) == (
+        official.scheme,
+        official.hostname,
+        official.port,
+    ):
+        return True
+    return _is_loopback(parsed.hostname or "")
 
 __all__ = ["ProcessorsClient", "PROCESSORS_BASE_URL"]
 
@@ -83,8 +107,10 @@ class ProcessorsClient:
     Args:
         api_key: Compute API key (``x402c_…``) holding ``processors:read`` or
             ``processors:write``. Read-only calls to the public catalogue need none.
-        base_url: Override the processors host.
+        base_url: Override the processors host. Must be https, or http on loopback.
         timeout: Per-request timeout in seconds.
+        allow_key_on_custom_host: Send the API key to a ``base_url`` that is neither the official
+            host nor loopback. Off by default; see :func:`_key_allowed_on_host`.
     """
 
     def __init__(
@@ -92,11 +118,18 @@ class ProcessorsClient:
         api_key: Optional[str] = None,
         base_url: str = PROCESSORS_BASE_URL,
         timeout: float = DEFAULT_TIMEOUT,
+        allow_key_on_custom_host: bool = False,
     ) -> None:
         self._api_key = api_key
         self._base_url = _assert_safe_base_url(base_url)
         headers: Dict[str, str] = {"Accept": "application/json"}
         if api_key:
+            if not _key_allowed_on_host(self._base_url) and not allow_key_on_custom_host:
+                raise ValueError(
+                    f"ProcessorsClient refuses to send an API key to {self._base_url}. It is "
+                    f"neither {PROCESSORS_BASE_URL} nor loopback. If you really do run your own "
+                    "processors host, pass allow_key_on_custom_host=True."
+                )
             headers["X-API-Key"] = api_key
         self._client = httpx.Client(
             base_url=self._base_url, headers=headers, timeout=timeout
