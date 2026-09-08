@@ -88,15 +88,16 @@ def _key_allowed_on_host(raw: str) -> bool:
     long-lived full-control credential. So the key travels only to the official host or to
     loopback unless the caller says otherwise, in one explicit flag they cannot set by accident.
     """
-    parsed = urlparse(raw)
-    official = urlparse(PROCESSORS_BASE_URL)
-    if (parsed.scheme, parsed.hostname, parsed.port) == (
-        official.scheme,
-        official.hostname,
-        official.port,
-    ):
+    def origin(u: str):
+        p = urlparse(u)
+        # Compare EFFECTIVE ports, so https://host and https://host:443 are the same origin.
+        # Without this the official host written with its default port was refused.
+        default = {"https": 443, "http": 80}.get(p.scheme or "")
+        return (p.scheme, p.hostname, p.port or default)
+
+    if origin(raw) == origin(PROCESSORS_BASE_URL):
         return True
-    return _is_loopback(parsed.hostname or "")
+    return _is_loopback(urlparse(raw).hostname or "")
 
 __all__ = ["ProcessorsClient", "PROCESSORS_BASE_URL"]
 
@@ -131,8 +132,18 @@ class ProcessorsClient:
                     "processors host, pass allow_key_on_custom_host=True."
                 )
             headers["X-API-Key"] = api_key
+        # trust_env=False for a LOOPBACK base URL, and only there.
+        #
+        # httpx honours HTTP_PROXY by default. With an http:// loopback host and a proxy set but
+        # no matching NO_PROXY, the plaintext X-API-Key would be sent to that proxy — which
+        # defeats the whole point of allowing plain HTTP on loopback in the first place. Against
+        # the official https host the key is inside TLS, so a corporate proxy stays supported.
+        loopback = _is_loopback(urlparse(self._base_url).hostname or "")
         self._client = httpx.Client(
-            base_url=self._base_url, headers=headers, timeout=timeout
+            base_url=self._base_url,
+            headers=headers,
+            timeout=timeout,
+            trust_env=not loopback,
         )
 
     # -- helpers ------------------------------------------------------------
