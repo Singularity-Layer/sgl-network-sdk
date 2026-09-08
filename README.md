@@ -122,3 +122,38 @@ print(f"TEE verified: {attestation.verified}")
 ## License
 
 MIT
+
+## Processors
+
+Processors are served by `processors.x402compute.cc`, not the grid, so they have their own client.
+
+```python
+from singularity_grid import ProcessorsClient
+
+p = ProcessorsClient(api_key=os.environ["SGL_API_KEY"])
+
+p.catalogue()                          # public, no credential
+p.list()                               # yours          (processors:read)
+p.deploy(manifest, code)               # returns the invoke token ONCE
+p.update("my-processor", code=code)
+p.set_listing("my-processor", True)
+p.run("my-processor", {"name": "world"}, invoke_token)
+```
+
+> **`processors:write` is full control** of processors owned by that key's wallet — delete and
+> secrets included, the same as a Cloudflare API token. Mint `processors:read` if you want a
+> credential that cannot change anything. Note that compute keys do not expire, there is no audit
+> log, and **delete is permanent**: the code is wiped and the slug is burned forever.
+
+`run()` takes the **invoke token** from `deploy()`, not the API key — the run route is the only one
+with both a money path and an anonymous buyer lane, so it does not read a key as an ownership
+claim. Buyers use `run_with_payment()` with an x402 header instead.
+
+### Upgrading from 0.8.x
+
+The six processor methods on `GridClient` (`deploy_processor`, `invoke_processor`,
+`list_processors`, `get_processor`, `delete_processor`, `get_processor_logs`) are **removed**, along
+with the `Processor*` models. They pointed at `/grid/processors`, which has never existed — every
+call returned 404 — and their models described an older design that was never shipped. Use
+`ProcessorsClient`. Nothing else changed: chat, embeddings, jobs, models, capacity, pricing,
+reserve and the vault are untouched.
