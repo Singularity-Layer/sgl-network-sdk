@@ -93,7 +93,9 @@ def _key_allowed_on_host(raw: str) -> bool:
         # Compare EFFECTIVE ports, so https://host and https://host:443 are the same origin.
         # Without this the official host written with its default port was refused.
         default = {"https": 443, "http": 80}.get(p.scheme or "")
-        return (p.scheme, p.hostname, p.port or default)
+        # `p.port or default` would fold an explicit :0 into the scheme default and
+        # authorize https://host:0 as the official origin.
+        return (p.scheme, p.hostname, p.port if p.port is not None else default)
 
     if origin(raw) == origin(PROCESSORS_BASE_URL):
         return True
