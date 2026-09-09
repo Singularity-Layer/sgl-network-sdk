@@ -287,6 +287,55 @@ class PodsClient:
     def get_wallet(self, pod_id: str) -> Dict[str, Any]:
         return self._request("GET", f"/pods/{pod_id}/wallet")["wallet"]
 
+    def update_wallet(self, pod_id: str, **patch: Any) -> Dict[str, Any]:
+        """Change a pod wallet's spend controls.
+
+        Needs ``pods:wallet:write`` — a general key that manages pods must not be able to
+        raise the cap on the money it can spend. The field is ``per_tx_cap_usd``, not
+        ``spend_cap_usd``; the API lists the editable names if you get it wrong.
+        """
+        return self._request("PATCH", f"/pods/{pod_id}/wallet", patch)
+
+    def add_connector(
+        self,
+        pod_id: str,
+        name: str,
+        url: str,
+        transport: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Attach an MCP connector, giving the agent a new tool.
+
+        Needs ``pods:control:write`` for the same reason: handing an agent new tools is not
+        something a general-purpose key should do.
+        """
+        body: Dict[str, Any] = {"name": name, "url": url}
+        if transport is not None:
+            body["transport"] = transport
+        if headers is not None:
+            body["headers"] = headers
+        return self._request("POST", f"/pods/{pod_id}/connectors", body)["connectors"]
+
+    def remove_connector(self, pod_id: str, connector_id: str) -> List[Dict[str, Any]]:
+        return self._request("DELETE", f"/pods/{pod_id}/connectors/{connector_id}")["connectors"]
+
+    def update_backups(
+        self, pod_id: str, enabled: bool, passphrase: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Turn automatic backups on or off. Setting a passphrase needs ``pods:wallet:write``."""
+        body: Dict[str, Any] = {"enabled": enabled}
+        if passphrase is not None:
+            body["passphrase"] = passphrase
+        return self._request("PATCH", f"/pods/{pod_id}/backups", body)["backups"]
+
+    def telegram_join_code(self, pod_id: str) -> Dict[str, Any]:
+        """Mint a Telegram join code for a group."""
+        return self._request("POST", f"/pods/{pod_id}/channels/telegram/join-code")["join"]
+
+    def telegram_join_status(self, pod_id: str) -> Dict[str, Any]:
+        """Poll whether a group has claimed the code. Never echoes the code back."""
+        return self._request("GET", f"/pods/{pod_id}/channels/telegram/join-code")["join"]
+
     def list_connectors(self, pod_id: str) -> List[Dict[str, Any]]:
         return self._request("GET", f"/pods/{pod_id}/connectors")["connectors"]
 
