@@ -336,6 +336,69 @@ class PodsClient:
         """Poll whether a group has claimed the code. Never echoes the code back."""
         return self._request("GET", f"/pods/{pod_id}/channels/telegram/join-code")["join"]
 
+    def get_update_policy(self, pod_id: str) -> Dict[str, Any]:
+        """Who decides WHEN this pod takes our updates.
+
+        By default we do: the pod polls every six hours and applies whatever we answer,
+        restarting its gateway for about forty seconds. Fine for a pod you run for yourself,
+        wrong for pods you run for customers who did not choose that moment.
+        """
+        return self._request("GET", f"/pods/{pod_id}/updates")["updates"]
+
+    def set_update_policy(self, pod_id: str, mode: str) -> Dict[str, Any]:
+        """``auto`` or ``manual``.
+
+        ``manual`` makes us keep answering with the version the pod already has, so it never
+        updates itself; you apply it with ``queue_action(pod_id, "update")`` when it suits
+        you. The hold expires after 30 days, because security fixes ride these bundles, and
+        the response always names the date so it is never a surprise.
+        """
+        return self._request("PATCH", f"/pods/{pod_id}/updates", {"mode": mode})["updates"]
+
+    def chat_ticket(self, pod_id: str) -> Dict[str, Any]:
+        """A short-lived ticket for the pod's streaming chat socket.
+
+        ``scope`` says what the socket will accept. Without ``pods:control:write`` it is
+        ``chat``, conversation only. Most integrations want the OpenAI endpoint instead.
+        """
+        return self._request("POST", f"/pods/{pod_id}/chat-ticket")["chat"]
+
+    def connect_telegram_group(
+        self, pod_id: str, require_mention: Optional[bool] = None, prompt: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Attach the Telegram group that claimed the join code.
+
+        Takes no chat id: it attaches only the group that claimed the code, because a claim
+        proves somebody typed it inside that room. Existing groups are preserved.
+        """
+        body: Dict[str, Any] = {}
+        if require_mention is not None:
+            body["require_mention"] = require_mention
+        if prompt is not None:
+            body["prompt"] = prompt
+        return self._request("POST", f"/pods/{pod_id}/channels/telegram/connect", body)["channel"]
+
+    def approve_pairing(self, pod_id: str, code: str, channel: str = "telegram") -> Dict[str, Any]:
+        """Approve someone to DM the agent.
+
+        A stranger who finds the bot can DM it, and unlike a group nobody else sees that
+        conversation, so the agent refuses unknown people and shows them a code. The code must
+        come from the agent, so this approves a request somebody already made.
+        """
+        return self._request("POST", f"/pods/{pod_id}/channels/{channel}/pair", {"code": code})["pairing"]
+
+    def wallet_send(self, pod_id: str, **body: Any) -> Dict[str, Any]:
+        """Move funds out of the pod's wallet. Needs ``pods:wallet:write``.
+
+        The spend cap is enforced server-side before the transfer and the pod holds no keys,
+        so this cannot exceed the policy set by :meth:`update_wallet`.
+        """
+        return self._request("POST", f"/pods/{pod_id}/wallet/send", body)
+
+    def wallet_pay_x402(self, pod_id: str, **body: Any) -> Dict[str, Any]:
+        """Pay an x402 endpoint from the pod's wallet. Needs ``pods:wallet:write``."""
+        return self._request("POST", f"/pods/{pod_id}/wallet/x402/pay", body)
+
     def list_connectors(self, pod_id: str) -> List[Dict[str, Any]]:
         return self._request("GET", f"/pods/{pod_id}/connectors")["connectors"]
 
