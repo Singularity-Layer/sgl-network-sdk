@@ -10,6 +10,11 @@ from .client import (
     SGLError,
     SGLNotFoundError,
 )
+from .pods import (
+    DEFAULT_PODS_BASE_URL,
+    PodsClient,
+    verify_pod_webhook,
+)
 from .models import (
     AttestationProof,
     CapacityResponse,
@@ -31,6 +36,10 @@ __all__ = [
     # lived on GridClient and pointed at /grid/processors, which has never existed.
     "ProcessorsClient",
     "PROCESSORS_BASE_URL",
+    # Agent Pods — hosted agents, on compute.x402layer.cc.
+    "PodsClient",
+    "DEFAULT_PODS_BASE_URL",
+    "verify_pod_webhook",
     # Client
     "GridClient",
     "create_openai_client",
