@@ -310,6 +310,9 @@ class GridClient:
         sealed = data.get("sealed_result")
         if not sealed:
             raise SGLAPIError(500, "No sealed result returned")
+        # Prove WHO produced this before opening it. AEAD only proves someone
+        # sealed it to our key, and the orchestrator knows that key.
+        e2e.require_verified_reply(reservation, data)
         plain = e2e.open_output(resp_sk, resp_pub, sealed["ephemeral_public_key"], sealed["ciphertext"])
         parsed = _json.loads(plain)
         return {
@@ -417,6 +420,9 @@ class GridClient:
                 sealed = data.get("sealed_result")
                 if not sealed:
                     raise SGLAPIError(500, "No sealed result returned")
+                # Same check on the non-streaming fallback: an orchestrator that
+                # can force this path must not get an unverified reply through it.
+                e2e.require_verified_reply(reservation, data)
                 plain = e2e.open_output(resp_sk, resp_pub, sealed["ephemeral_public_key"], sealed["ciphertext"])
                 content = _json.loads(plain).get("content", "")
                 if content:

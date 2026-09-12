@@ -80,6 +80,83 @@ def seal_input(node_pub_b58: str, resp_pub_b58: str, plaintext: bytes) -> tuple[
     return _b58e(nonce + ct), eph_b58
 
 
+class UnverifiedReply(Exception):
+    """A sealed reply could not be proven to come from the reserved node."""
+
+
+def verify_result_envelope(
+    node_ed25519_b58: str | None,
+    job_id: str | None,
+    kind: str,
+    ciphertext: str,
+    signature_b58: str | None,
+) -> bool:
+    """Verify the node's v1 envelope signature over a sealed reply.
+
+    The signature covers the PUBLIC ciphertext, not the plaintext, so it can be
+    checked exactly -- no re-serialising, no key-ordering problem. Message:
+    ``sgl-result-v1\\n{job_id}\\n{kind}\\n{sha256_hex(ciphertext)}``, and the
+    ciphertext is hashed as the literal UTF-8 string, not as decoded bytes.
+    """
+    if not node_ed25519_b58 or not signature_b58 or not job_id:
+        return False
+    try:
+        from hashlib import sha256
+
+        from nacl.signing import VerifyKey
+
+        digest = sha256(ciphertext.encode()).hexdigest()
+        msg = f"sgl-result-v1\n{job_id}\n{kind}\n{digest}".encode()
+        VerifyKey(_b58d(node_ed25519_b58)).verify(msg, _b58d(signature_b58))
+        return True
+    except Exception:
+        return False
+
+
+def require_verified_reply(
+    reservation: dict,
+    data: dict,
+    kind: str = "sealed",
+) -> None:
+    """Refuse a sealed reply we cannot attribute to the reserved node.
+
+    Why this is mandatory rather than best-effort: ``client_response_pubkey``
+    reaches the orchestrator in cleartext, so a compromised orchestrator cannot
+    READ a prompt but CAN fabricate a reply, seal it to that key, and have it
+    decrypt cleanly. AEAD proves only that someone sealed it to us; this proves
+    WHO. Without it the grid could put words in the model's mouth -- and for an
+    agentic caller, tool calls in its hands.
+
+    A MISSING signature fails exactly like an invalid one. Every sealed reply
+    carries one, so absence means something is wrong, and "warn and continue" is
+    what let this gap survive unnoticed in the first place.
+    """
+    sealed = data.get("sealed_result") or {}
+    version = data.get("result_envelope_version")
+    if version is not None and version != "v1":
+        raise UnverifiedReply(f"unknown result envelope version {version!r}")
+    # `job_id` is explicit on current grids; older ones only embed it in `id`.
+    job_id = data.get("job_id")
+    if not job_id:
+        raw_id = data.get("id") or ""
+        job_id = raw_id[len("chatcmpl-") :] if raw_id.startswith("chatcmpl-") else None
+    ok = verify_result_envelope(
+        reservation.get("node_ed25519_pubkey"),
+        job_id,
+        kind,
+        sealed.get("ciphertext", ""),
+        data.get("result_envelope_signature"),
+    )
+    if not ok:
+        # NEVER fall back to `result_signature`: that legacy field signs the
+        # PLAINTEXT and is always absent for sealed replies, so reaching for it
+        # would make this check silently meaningless.
+        raise UnverifiedReply(
+            "sealed reply is not signed by the reserved node — refusing it. "
+            "Update the grid if this persists."
+        )
+
+
 def open_output(resp_sk: bytes, resp_pub_b58: str, node_eph_b58: str, ct_b58: str) -> bytes:
     """Open the node's (non-stream) reply sealed to our response key."""
     shared = bindings.crypto_scalarmult(resp_sk, _b58d(node_eph_b58))
