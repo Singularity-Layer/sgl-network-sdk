@@ -459,6 +459,24 @@ class GridClient:
                         raise SGLAPIError(502, "stream chunk 0 missing ephemeral key")
                     out_key = e2e.stream_out_key(resp_sk, stream_eph)
                 is_final = chunk.get("final") is True
+                # Verify EVERY chunk before opening it. The node signs each with
+                # kind "stream:{seq}:{final}" over the chunk ciphertext, and the
+                # orchestrator relays that signature rather than consuming it.
+                # Without this a compromised relay could splice or invent chunks,
+                # i.e. edit the answer as it arrives.
+                if chunk.get("sigv") and chunk["sigv"] != "v1":
+                    raise e2e.UnverifiedReply(f"unknown chunk envelope version {chunk['sigv']!r}")
+                kind = f"stream:{seq}:{1 if is_final else 0}"
+                if not e2e.verify_result_envelope(
+                    reservation.get("node_ed25519_pubkey"),
+                    chunk.get("job"),
+                    kind,
+                    chunk["ct"],
+                    chunk.get("sig"),
+                ):
+                    raise e2e.UnverifiedReply(
+                        f"stream chunk {seq} is not signed by the reserved node — refusing it."
+                    )
                 text = e2e.open_stream_chunk(out_key, resp_pub, stream_eph, nonce, seq, is_final, chunk["ct"]).decode()
                 if text:
                     yield text
