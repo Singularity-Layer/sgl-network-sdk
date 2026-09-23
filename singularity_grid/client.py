@@ -109,6 +109,8 @@ class SystemOneAPI:
         lang: Optional[str] = None,
         tier: Optional[str] = None,
         user: Optional[str] = None,
+        private: bool = False,
+        input_tokens_upper_bound: Optional[int] = None,
     ) -> SystemOneResponse:
         """Ask typed questions about ``state`` (``POST /v1/systemone``).
 
@@ -116,16 +118,31 @@ class SystemOneAPI:
         ``{"type": "choice", "instructions", "criteria": {option: description, ...}}``,
         ``{"type": "score", "instructions", "criteria": [...]}`` or
         ``{"type": "noul", "instructions"}``. ``tier`` is ``"standard"`` or
-        ``"confidential"``. The state goes to the orchestrator over TLS; it is not
-        sealed in this client.
+        ``"confidential"``.
+
+        Set ``private=True`` to reserve an attested System One node and seal
+        ``state``/``questions`` locally to that node. In that mode the orchestrator
+        sees only the token upper-bound and ciphertext; the decrypted typed answer is
+        verified and opened in this client.
         """
+        q_body = {
+            qid: q.model_dump(exclude_none=True) if isinstance(q, BaseModel) else dict(q)
+            for qid, q in questions.items()
+        }
+        if private:
+            return self._create_private(
+                model,
+                state,
+                q_body,
+                task=task,
+                lang=lang,
+                tier=tier,
+                input_tokens_upper_bound=input_tokens_upper_bound,
+            )
         body: Dict[str, Any] = {
             "model": model,
             "state": state,
-            "questions": {
-                qid: q.model_dump(exclude_none=True) if isinstance(q, BaseModel) else dict(q)
-                for qid, q in questions.items()
-            },
+            "questions": q_body,
         }
         if task is not None:
             body["task"] = task
@@ -145,6 +162,79 @@ class SystemOneAPI:
                 raise SGLAPIError(402, _PAYMENT_REQUIRED_MSG, err.body) from err
             raise
         return SystemOneResponse.model_validate(data)
+
+    def _estimate_input_tokens(self, state: Any, questions: Mapping[str, Mapping[str, Any]]) -> int:
+        raw = _json.dumps({"state": state, "questions": questions}, separators=(",", ":")).encode()
+        return max(1, (len(raw) + 2) // 3)
+
+    def _create_private(
+        self,
+        model: str,
+        state: Any,
+        questions: Mapping[str, Mapping[str, Any]],
+        *,
+        task: Optional[str],
+        lang: Optional[str],
+        tier: Optional[str],
+        input_tokens_upper_bound: Optional[int],
+    ) -> SystemOneResponse:
+        tokens = input_tokens_upper_bound or self._estimate_input_tokens(state, questions)
+        reserve_body: Dict[str, Any] = {
+            "model": model,
+            "input_tokens_upper_bound": tokens,
+        }
+        if tier is not None:
+            reserve_body["tier"] = tier
+        reservation = self._grid._request("POST", "/v1/systemone/reserve", json=reserve_body)
+        if not reservation.get("node_x25519_pubkey"):
+            raise SGLAPIError(503, "Reserved System One node does not support E2E encryption")
+
+        payload: Dict[str, Any] = {"model": model, "state": state, "questions": questions}
+        if task is not None:
+            payload["task"] = task
+        if lang is not None:
+            payload["lang"] = lang
+
+        resp_sk, resp_pub = e2e.new_response_keypair()
+        sealed_ct, eph = e2e.seal_input(
+            reservation["node_x25519_pubkey"],
+            resp_pub,
+            _json.dumps(payload, separators=(",", ":")).encode(),
+        )
+        try:
+            data = self._grid._request("POST", "/v1/systemone", json={
+                "reservation_token": reservation["reservation_token"],
+                "enc": {
+                    "ciphertext": sealed_ct,
+                    "client_ephemeral_pubkey": eph,
+                    "client_response_pubkey": resp_pub,
+                    "algorithm": e2e.ALGO_V2,
+                },
+            })
+        except SGLAPIError as err:
+            err_obj = (err.body or {}).get("error") if isinstance(err.body, dict) else None
+            if err.status_code == 402 and isinstance(err_obj, dict) and err_obj.get("type") == "payment_required":
+                raise SGLAPIError(402, _PAYMENT_REQUIRED_MSG, err.body) from err
+            raise
+
+        sealed = data.get("sealed_result")
+        if not sealed:
+            raise SGLAPIError(500, "No sealed System One result returned")
+        e2e.require_verified_reply(reservation, data)
+        plain = e2e.open_output(
+            resp_sk,
+            resp_pub,
+            sealed["ephemeral_public_key"],
+            sealed["ciphertext"],
+            sealed.get("encoding"),
+        )
+        parsed = _json.loads(plain)
+        parsed["object"] = "systemone.result"
+        parsed["model"] = data.get("model", parsed.get("model", model))
+        usage = dict(parsed.get("usage") or {})
+        usage.update({k: v for k, v in (data.get("usage") or {}).items() if v is not None})
+        parsed["usage"] = usage
+        return SystemOneResponse.model_validate(parsed)
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +482,7 @@ class GridClient:
         # Prove WHO produced this before opening it. AEAD only proves someone
         # sealed it to our key, and the orchestrator knows that key.
         e2e.require_verified_reply(reservation, data)
-        plain = e2e.open_output(resp_sk, resp_pub, sealed["ephemeral_public_key"], sealed["ciphertext"])
+        plain = e2e.open_output(resp_sk, resp_pub, sealed["ephemeral_public_key"], sealed["ciphertext"], sealed.get("encoding"))
         parsed = _json.loads(plain)
         return {
             "id": data.get("id", ""),
@@ -502,7 +592,7 @@ class GridClient:
                 # Same check on the non-streaming fallback: an orchestrator that
                 # can force this path must not get an unverified reply through it.
                 e2e.require_verified_reply(reservation, data)
-                plain = e2e.open_output(resp_sk, resp_pub, sealed["ephemeral_public_key"], sealed["ciphertext"])
+                plain = e2e.open_output(resp_sk, resp_pub, sealed["ephemeral_public_key"], sealed["ciphertext"], sealed.get("encoding"))
                 content = _json.loads(plain).get("content", "")
                 if content:
                     yield content

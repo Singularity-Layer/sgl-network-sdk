@@ -10,6 +10,8 @@ The orchestrator only ever relays ciphertext — it never sees the prompt or rep
 
 from __future__ import annotations
 
+import base64
+
 import base58
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -48,6 +50,14 @@ def _b58e(b: bytes) -> str:
 
 def _b58d(s: str) -> bytes:
     return base58.b58decode(s)
+
+
+def _decode_ciphertext(ciphertext: str, encoding: str | None = None) -> bytes:
+    if encoding is None:
+        return _b58d(ciphertext)
+    if encoding == "base64":
+        return base64.b64decode(ciphertext)
+    raise ValueError(f"unsupported sealed encoding: {encoding}")
 
 
 def _gen_keypair() -> tuple[bytes, bytes]:
@@ -157,12 +167,12 @@ def require_verified_reply(
         )
 
 
-def open_output(resp_sk: bytes, resp_pub_b58: str, node_eph_b58: str, ct_b58: str) -> bytes:
+def open_output(resp_sk: bytes, resp_pub_b58: str, node_eph_b58: str, ct: str, encoding: str | None = None) -> bytes:
     """Open the node's (non-stream) reply sealed to our response key."""
     shared = bindings.crypto_scalarmult(resp_sk, _b58d(node_eph_b58))
     key = _hkdf(shared, _INFO_OUTPUT)
     aad = _aad_output(resp_pub_b58, node_eph_b58)
-    blob = _b58d(ct_b58)
+    blob = _decode_ciphertext(ct, encoding)
     return bindings.crypto_aead_xchacha20poly1305_ietf_decrypt(blob[24:], aad, blob[:24], key)
 
 

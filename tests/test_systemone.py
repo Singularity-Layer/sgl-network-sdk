@@ -12,6 +12,7 @@ from singularity_grid import (
     SystemOneScoreAnswer,
     SystemOneScoreQuestion,
 )
+from singularity_grid import e2e
 
 
 def _grid(handler, api_key="scg_test"):
@@ -146,6 +147,49 @@ def test_other_402s_keep_server_message(etype, message):
     assert message in str(ei.value)
     assert "pass api_key" not in str(ei.value)
     assert ei.value.body["error"]["type"] == etype
+
+
+def test_private_create_reserves_then_submits_ciphertext_only():
+    node_key = e2e.new_response_keypair()[1]
+    calls = []
+
+    def handler(req):
+        calls.append((req.url.path, json.loads(req.content)))
+        if req.url.path == "/v1/systemone/reserve":
+            return httpx.Response(200, json={
+                "reservation_token": "sys1.token",
+                "node_id": "node-1",
+                "node_x25519_pubkey": node_key,
+                "node_ed25519_pubkey": None,
+                "attestation_verified": True,
+                "expires_in_ms": 60000,
+            })
+        return httpx.Response(402, json={
+            "error": {"message": "Insufficient credits.", "type": "insufficient_credits"},
+        })
+
+    grid = _grid(handler)
+    with pytest.raises(SGLAPIError) as ei:
+        grid.systemone.create(
+            "laya",
+            {"secret": "do not send me"},
+            {"q": {"type": "noul", "instructions": "?"}},
+            private=True,
+        )
+    assert ei.value.status_code == 402
+    assert "Insufficient credits" in str(ei.value)
+
+    assert calls[0][0] == "/v1/systemone/reserve"
+    assert sorted(calls[0][1]) == ["input_tokens_upper_bound", "model"]
+    assert calls[0][1]["model"] == "laya"
+    assert isinstance(calls[0][1]["input_tokens_upper_bound"], int)
+
+    assert calls[1][0] == "/v1/systemone"
+    assert sorted(calls[1][1]) == ["enc", "reservation_token"]
+    assert calls[1][1]["reservation_token"] == "sys1.token"
+    assert calls[1][1]["enc"]["algorithm"] == e2e.ALGO_V2
+    assert isinstance(calls[1][1]["enc"]["ciphertext"], str)
+    assert "do not send me" not in json.dumps(calls[1][1])
 
 
 def test_disabled_endpoint_is_not_found():
