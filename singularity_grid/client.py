@@ -170,6 +170,22 @@ class GridClient:
         wrapped = PricingResponse.model_validate(data)
         return wrapped.pricing
 
+    def v1_models(self, type: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Return OpenAI-compatible ``/v1/models`` descriptors.
+
+        Pass ``type="systemone"`` to discover Laya/Jev-style typed-decision
+        models.
+        """
+        params: Dict[str, Any] = {}
+        if type is not None:
+            params["type"] = type
+        data = self._request("GET", "/v1/models", params=params or None)
+        return list(data.get("data", []))
+
+    def systemone_models(self) -> List[Dict[str, Any]]:
+        """List Laya/Jev-style System One typed-decision models."""
+        return self.v1_models(type="systemone")
+
     # -- authenticated endpoints --------------------------------------------
 
     def submit_job(
@@ -359,6 +375,44 @@ class GridClient:
             if err.status_code == 402:
                 raise SGLAPIError(402, "Payment required — pass api_key (credits); the Python GridClient does not sign x402 payments.") from err
             raise
+
+    def system_one(
+        self,
+        state: Dict[str, Any],
+        questions: Dict[str, Dict[str, Any]],
+        *,
+        model: str = "convaiinnovations/laya",
+        node: Optional[str] = None,
+        cluster: Optional[str] = None,
+        max_price: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Call Laya/System One typed decisions via ``POST /v1/systemone``.
+
+        This is not a chat-completions model. Use it for compact typed outputs
+        such as choices, scores, and no-output-language summaries. Requires
+        ``api_key`` (credits); x402 pay-per-call is not signed by this client.
+        """
+        body: Dict[str, Any] = {
+            "model": model,
+            "state": state,
+            "questions": questions,
+        }
+        if node is not None:
+            body["node"] = node
+        if cluster is not None:
+            body["cluster"] = cluster
+        if max_price is not None:
+            body["max_price"] = max_price
+        try:
+            return self._request("POST", "/v1/systemone", json=body)
+        except SGLAPIError as err:
+            if err.status_code == 402:
+                raise SGLAPIError(402, "Payment required — pass api_key (credits); the Python GridClient does not sign x402 payments.") from err
+            raise
+
+    def systemone(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+        """Alias for :meth:`system_one` matching the HTTP endpoint spelling."""
+        return self.system_one(*args, **kwargs)
 
     def embed(self, model: str, input: Any, **kwargs: Any) -> List[List[float]]:
         """Convenience wrapper around :meth:`embeddings` that returns just the list of

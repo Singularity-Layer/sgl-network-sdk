@@ -88,6 +88,39 @@ attestation = grid.get_attestation(job.job_id)
 print(f"TEE verified: {attestation.verified}")
 ```
 
+### 4. System One / Laya
+
+Laya is served as a typed-decision model, not as chat completions.
+
+```python
+from singularity_grid import GridClient
+
+grid = GridClient(api_key="x402c_your_api_key")
+
+systemone_models = grid.systemone_models()
+print([model["id"] for model in systemone_models])
+
+decision = grid.system_one(
+    model="convaiinnovations/laya",
+    state={"ticket": "Enterprise customer cannot access billing exports"},
+    questions={
+        "route": {
+            "type": "choice",
+            "instructions": "Choose the best team.",
+            "criteria": {
+                "billing": "Billing, invoice, refund, or account credit issue.",
+                "support": "Product defect or technical troubleshooting.",
+            },
+        },
+        "urgency": {
+            "type": "score",
+            "instructions": "Score urgency from 0 to 1.",
+        },
+    },
+)
+print(decision["answers"])
+```
+
 ## API reference
 
 ### GridClient
@@ -96,7 +129,10 @@ print(f"TEE verified: {attestation.verified}")
 |---|---|---|
 | `capacity()` | No | Grid-wide capacity summary |
 | `models()` | No | Available models with pricing and TEE info |
+| `v1_models(type=None)` | No | OpenAI-compatible model list; pass `type="systemone"` for Laya |
+| `systemone_models()` | No | List Laya/System One typed-decision models |
 | `pricing()` | No | Pricing table for all models |
+| `system_one(state, questions, ...)` | Yes | Call `/v1/systemone` for typed decisions |
 | `submit_job(model, input_payload, ...)` | Yes | Submit a compute job |
 | `get_job(job_id)` | Yes | Get job status and result |
 | `get_attestation(job_id)` | Yes | Get TEE attestation proof |
