@@ -9,6 +9,7 @@ from .client import (
     SGLConnectionError,
     SGLError,
     SGLNotFoundError,
+    SystemOneAPI,
 )
 from .pods import (
     DEFAULT_PODS_BASE_URL,
@@ -25,6 +26,18 @@ from .models import (
     ModelsResponse,
     PricingInfo,
     PricingResponse,
+    SystemOneAnswer,
+    SystemOneChoiceAnswer,
+    SystemOneChoiceQuestion,
+    SystemOneModelInfo,
+    SystemOneNoulAnswer,
+    SystemOneNoulQuestion,
+    SystemOneQuestion,
+    SystemOneResponse,
+    SystemOneScoreAnswer,
+    SystemOneScoreQuestion,
+    SystemOneTier,
+    SystemOneUsage,
     TeeCapacity,
 )
 from .openai_compat import create_openai_client
@@ -61,5 +74,19 @@ __all__ = [
     "PricingInfo",
     "PricingResponse",
     "TeeCapacity",
+    # System One — typed decisions (GridClient.systemone)
+    "SystemOneAPI",
+    "SystemOneAnswer",
+    "SystemOneChoiceAnswer",
+    "SystemOneChoiceQuestion",
+    "SystemOneModelInfo",
+    "SystemOneNoulAnswer",
+    "SystemOneNoulQuestion",
+    "SystemOneQuestion",
+    "SystemOneResponse",
+    "SystemOneScoreAnswer",
+    "SystemOneScoreQuestion",
+    "SystemOneTier",
+    "SystemOneUsage",
 ]
 from .vault import VaultClient, VaultError, encrypt_envelope, decrypt_envelope

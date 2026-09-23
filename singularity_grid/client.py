@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json as _json
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Union
 
 import httpx
+from pydantic import BaseModel
 
 from . import e2e
 from .models import (
@@ -17,6 +18,8 @@ from .models import (
     ModelsResponse,
     PricingInfo,
     PricingResponse,
+    SystemOneModelInfo,
+    SystemOneResponse,
 )
 
 DEFAULT_BASE_URL = "https://grid.x402compute.cc"
@@ -70,6 +73,80 @@ class SGLConnectionError(SGLError):
     """Raised when the orchestrator is unreachable."""
 
 
+_PAYMENT_REQUIRED_MSG = "Payment required — pass api_key (credits); the Python GridClient does not sign x402 payments."
+
+
+# ---------------------------------------------------------------------------
+# System One
+# ---------------------------------------------------------------------------
+
+class SystemOneAPI:
+    """Typed System One decisions (e.g. Laya/Jev), reached as ``GridClient.systemone``.
+
+    Nodes return typed answers (``choice``, ``score``, ``noul``) to caller-supplied
+    questions about ``state``. Billed on input tokens only. Requires ``api_key``
+    (credits); x402 pay-per-call isn't signed by this client.
+    """
+
+    def __init__(self, grid: "GridClient") -> None:
+        self._grid = grid
+
+    def models(self) -> List[SystemOneModelInfo]:
+        """List System One models (``GET /v1/models?type=systemone``). Empty until the
+        orchestrator enables System One."""
+        data = self._grid._request("GET", "/v1/models", params={"type": "systemone"})
+        # Filter again here so a server that ignores ?type= can't hand back chat models.
+        rows = [r for r in data.get("data", []) if isinstance(r, dict) and r.get("type") == "systemone"]
+        return [SystemOneModelInfo.model_validate(r) for r in rows]
+
+    def create(
+        self,
+        model: str,
+        state: Any,
+        questions: Mapping[str, Union[Mapping[str, Any], BaseModel]],
+        *,
+        task: Optional[str] = None,
+        lang: Optional[str] = None,
+        tier: Optional[str] = None,
+        user: Optional[str] = None,
+    ) -> SystemOneResponse:
+        """Ask typed questions about ``state`` (``POST /v1/systemone``).
+
+        ``questions`` maps a question id to a dict or a ``SystemOne*Question`` model:
+        ``{"type": "choice", "instructions", "criteria": {option: description, ...}}``,
+        ``{"type": "score", "instructions", "criteria": [...]}`` or
+        ``{"type": "noul", "instructions"}``. ``tier`` is ``"standard"`` or
+        ``"confidential"``. The state goes to the orchestrator over TLS; it is not
+        sealed in this client.
+        """
+        body: Dict[str, Any] = {
+            "model": model,
+            "state": state,
+            "questions": {
+                qid: q.model_dump(exclude_none=True) if isinstance(q, BaseModel) else dict(q)
+                for qid, q in questions.items()
+            },
+        }
+        if task is not None:
+            body["task"] = task
+        if lang is not None:
+            body["lang"] = lang
+        if tier is not None:
+            body["tier"] = tier
+        if user is not None:
+            body["user"] = user
+        try:
+            data = self._grid._request("POST", "/v1/systemone", json=body)
+        except SGLAPIError as err:
+            # Only the bare x402 challenge means "no credential". Insufficient credits and
+            # pod caps are also 402 but their server message is the useful one — keep it.
+            err_obj = (err.body or {}).get("error") if isinstance(err.body, dict) else None
+            if err.status_code == 402 and isinstance(err_obj, dict) and err_obj.get("type") == "payment_required":
+                raise SGLAPIError(402, _PAYMENT_REQUIRED_MSG, err.body) from err
+            raise
+        return SystemOneResponse.model_validate(data)
+
+
 # ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
@@ -107,6 +184,8 @@ class GridClient:
             headers=headers,
             timeout=timeout,
         )
+        self.systemone = SystemOneAPI(self)
+        """Typed System One decisions: ``systemone.models()`` and ``systemone.create(...)``."""
 
     # -- helpers ------------------------------------------------------------
 

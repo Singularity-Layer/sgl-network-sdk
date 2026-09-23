@@ -88,6 +88,54 @@ attestation = grid.get_attestation(job.job_id)
 print(f"TEE verified: {attestation.verified}")
 ```
 
+### 4. System One (typed decisions)
+
+System One models such as Laya return typed answers to your questions about a JSON state. They
+do not generate text. There are three answer types:
+
+- `choice` picks one option from `criteria`.
+- `score` gives a numeric score against a list of criteria.
+- `noul` gives a single string, number or boolean.
+
+You pay for input tokens only. You must supply `api_key`, because the Python client uses credits
+and does not sign x402 payments.
+
+```python
+from singularity_grid import GridClient
+
+grid = GridClient(api_key="scg_your_api_key")
+
+grid.systemone.models()   # GET /v1/models?type=systemone
+
+res = grid.systemone.create(
+    model="convaiinnovations/laya",   # the alias "laya" also works
+    state={"ticket": "I was charged twice this month"},
+    questions={
+        "route": {"type": "choice", "instructions": "Which queue?",
+                  "criteria": {"billing": "Money problems", "tech": "Bugs"}},
+        "urgency": {"type": "score", "instructions": "How urgent is this?",
+                    "criteria": ["The customer is blocked"]},
+        "lang": {"type": "noul", "instructions": "ISO language code of the ticket"},
+    },
+    tier="standard",          # optional: "standard" | "confidential"
+)
+
+res.answers["route"].choice      # "billing"
+res.answers["urgency"].score     # 0.7
+res.answers["lang"].value        # "en"
+res.usage.cost_usd
+```
+
+Questions can also be `SystemOneChoiceQuestion`, `SystemOneScoreQuestion` or
+`SystemOneNoulQuestion` models. `create()` also accepts `task`, `lang` and `user`.
+
+- A 402 error of type `payment_required` means that you did not supply `api_key`.
+- Other 402 errors keep the message from the server, for example `insufficient_credits` and
+  `pod_cap_reached`.
+- `create()` raises `SGLNotFoundError` and `models()` returns `[]` while System One is off on
+  the orchestrator.
+- The client does not seal the state. It goes to the orchestrator over TLS.
+
 ## API reference
 
 ### GridClient
@@ -100,6 +148,8 @@ print(f"TEE verified: {attestation.verified}")
 | `submit_job(model, input_payload, ...)` | Yes | Submit a compute job |
 | `get_job(job_id)` | Yes | Get job status and result |
 | `get_attestation(job_id)` | Yes | Get TEE attestation proof |
+| `systemone.models()` | No | System One models (`GET /v1/models?type=systemone`) |
+| `systemone.create(model, state, questions, ...)` | Yes | Typed System One answers (`POST /v1/systemone`) |
 
 ### Exceptions
 

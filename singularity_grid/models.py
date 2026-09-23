@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ---------------------------------------------------------------------------
@@ -111,5 +111,94 @@ class JobResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# System One (typed decisions, e.g. Laya/Jev)
 # ---------------------------------------------------------------------------
 
+SystemOneTier = Literal["standard", "confidential"]
+
+
+class SystemOneChoiceQuestion(BaseModel):
+    """Pick one of ``criteria``: a mapping of option id to description (at least two)."""
+    type: Literal["choice"] = "choice"
+    instructions: str
+    criteria: Dict[str, str]
+
+
+class SystemOneScoreQuestion(BaseModel):
+    """Score the state against a non-empty list of criteria."""
+    type: Literal["score"] = "score"
+    instructions: str
+    criteria: List[str]
+
+
+class SystemOneNoulQuestion(BaseModel):
+    """Free-form typed value (string, number or boolean). Takes no criteria."""
+    type: Literal["noul"] = "noul"
+    instructions: str
+
+
+SystemOneQuestion = Annotated[
+    Union[SystemOneChoiceQuestion, SystemOneScoreQuestion, SystemOneNoulQuestion],
+    Field(discriminator="type"),
+]
+
+
+class SystemOneChoiceAnswer(BaseModel):
+    """Answer to a ``choice`` question."""
+    model_config = ConfigDict(extra="allow")
+    type: Literal["choice"]
+    choice: str
+    probabilities: Optional[Dict[str, float]] = None
+    confidence: Optional[float] = None
+
+
+class SystemOneScoreAnswer(BaseModel):
+    """Answer to a ``score`` question."""
+    model_config = ConfigDict(extra="allow")
+    type: Literal["score"]
+    score: float
+    confidence: Optional[float] = None
+
+
+class SystemOneNoulAnswer(BaseModel):
+    """Answer to a ``noul`` question."""
+    model_config = ConfigDict(extra="allow")
+    type: Literal["noul"]
+    value: Optional[Union[bool, int, float, str]] = None
+    confidence: Optional[float] = None
+
+
+SystemOneAnswer = Annotated[
+    Union[SystemOneChoiceAnswer, SystemOneScoreAnswer, SystemOneNoulAnswer],
+    Field(discriminator="type"),
+]
+
+
+class SystemOneUsage(BaseModel):
+    """Usage for a System One call. Billed on input tokens only."""
+    model_config = ConfigDict(extra="allow")
+    input_tokens: int = 0
+    output_tokens: Union[int, float] = 0
+    cost_usd: float = 0.0
+
+
+class SystemOneResponse(BaseModel):
+    """Response from POST /v1/systemone. Unknown node fields are kept as extras."""
+    model_config = ConfigDict(extra="allow")
+    object: Literal["systemone.result"] = "systemone.result"
+    model: str
+    answers: Dict[str, SystemOneAnswer]
+    usage: SystemOneUsage = Field(default_factory=SystemOneUsage)
+
+
+class SystemOneModelInfo(BaseModel):
+    """System One model descriptor returned by GET /v1/models?type=systemone."""
+    model_config = ConfigDict(extra="allow")
+    id: str
+    object: str = "model"
+    created: Optional[int] = None
+    owned_by: str = ""
+    type: Literal["systemone"] = "systemone"
+    context_window: Optional[int] = None
+    max_questions: Optional[int] = None
+    degraded: bool = False
