@@ -42,7 +42,7 @@ from .models import (
 )
 from .openai_compat import create_openai_client
 
-__version__ = "0.2.0"
+__version__ = "0.10.0"
 
 __all__ = [
     # Processors — a SEPARATE client on processors.x402compute.cc. Until 0.9.0 these methods
