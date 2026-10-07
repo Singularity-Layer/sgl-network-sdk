@@ -10,14 +10,14 @@ import mimetypes
 import os
 import stat
 from pathlib import Path
-from typing import Any, Optional, Sequence, Tuple, Union
+from typing import Any, Optional, Sequence, Tuple, Union, cast
 
 from .errors import EmbeddingInputError
 from .models import (
     EmbeddingAudioPart,
     EmbeddingContentPart,
     EmbeddingImagePart,
-    EmbeddingInput,
+    EmbeddingMediaMimeType,
     EmbeddingTextPart,
     EmbeddingVideoPart,
     InlineEmbeddingMedia,
@@ -35,9 +35,11 @@ EMBEDDINGGEMMA2_LIMITS = {
     "max_images_per_item": 8,
     "max_image_bytes_per_item": 8 * 1024 * 1024,
     "max_image_pixels": 16_000_000,
+    "max_audio_parts_per_item": 1,
     "max_audio_bytes": 8 * 1024 * 1024,
     "max_audio_seconds": 30,
     "max_video_bytes": 16 * 1024 * 1024,
+    "max_video_parts_per_item": 1,
     "max_video_seconds": 32,
     "max_video_frames": 32,
     "max_request_media_bytes": 20 * 1024 * 1024,
@@ -49,14 +51,19 @@ EMBEDDINGGEMMA2_LIMITS = {
     "video_frames_per_second": 1,
 }
 
+EMBEDDINGGEMMA2_MIME_TYPES = {
+    "image": ("image/jpeg", "image/png", "image/webp"),
+    "audio": ("audio/wav", "audio/flac", "audio/mpeg"),
+    "video": ("video/mp4",),
+}
 _MIME_TO_MODALITY = {
-    "image/jpeg": "image",
-    "image/png": "image",
-    "image/webp": "image",
-    "audio/wav": "audio",
-    "audio/flac": "audio",
-    "audio/mpeg": "audio",
-    "video/mp4": "video",
+    mime_type: modality
+    for modality, mime_types in EMBEDDINGGEMMA2_MIME_TYPES.items()
+    for mime_type in mime_types
+}
+_MIME_ALIASES = {
+    "audio/x-wav": "audio/wav",
+    "audio/x-flac": "audio/flac",
 }
 _MIME_LIMITS = {
     "image": EMBEDDINGGEMMA2_LIMITS["max_image_bytes_per_item"],
@@ -75,11 +82,20 @@ def _media_limit(mime_type: str) -> int:
     return _MIME_LIMITS[modality]
 
 
+def _canonical_mime_type(mime_type: str) -> EmbeddingMediaMimeType:
+    """Normalize platform MIME aliases before building the strict Grid envelope."""
+
+    normalized = _MIME_ALIASES.get(mime_type, mime_type)
+    _media_limit(normalized)
+    return cast(EmbeddingMediaMimeType, normalized)
+
+
 def media_from_bytes(data: bytes, *, mime_type: str) -> InlineEmbeddingMedia:
     """Create an inline media envelope, enforcing the model's per-file limit."""
 
     if not isinstance(data, bytes):
         raise EmbeddingInputError("invalid_media", "Media data must be bytes")
+    mime_type = _canonical_mime_type(mime_type)
     limit = _media_limit(mime_type)
     if not data:
         raise EmbeddingInputError("invalid_media", "Media data must not be empty")
@@ -104,6 +120,7 @@ def media_from_base64(
 ) -> InlineEmbeddingMedia:
     """Validate canonical base64, enforce size, and calculate or verify SHA-256."""
 
+    mime_type = _canonical_mime_type(mime_type)
     limit = _media_limit(mime_type)
     if not isinstance(data, str) or not data:
         raise EmbeddingInputError("invalid_base64", "Base64 media must be a nonempty string")
@@ -146,6 +163,7 @@ def media_from_file(
             "unsupported_mime_type",
             "Could not infer a supported MIME type; pass mime_type explicitly",
         )
+    selected_mime = _canonical_mime_type(selected_mime)
     limit = _media_limit(selected_mime)
     try:
         with file_path.open("rb") as handle:
@@ -269,26 +287,26 @@ def _validate_item(item: Any) -> Tuple[int, int, int, bool]:
             media_tokens += frames * EMBEDDINGGEMMA2_LIMITS["video_frame_tokens"]
     if images > EMBEDDINGGEMMA2_LIMITS["max_images_per_item"] or image_bytes > EMBEDDINGGEMMA2_LIMITS["max_image_bytes_per_item"]:
         raise EmbeddingInputError("image_limit_exceeded", "An item exceeds the image count or byte limit")
-    if audio > 1 or video > 1:
-        raise EmbeddingInputError("media_count_exceeded", "Each item supports at most one audio and one video part")
+    if audio > EMBEDDINGGEMMA2_LIMITS["max_audio_parts_per_item"]:
+        raise EmbeddingInputError("too_many_audio_parts", "Each item supports at most one audio part")
+    if video > EMBEDDINGGEMMA2_LIMITS["max_video_parts_per_item"]:
+        raise EmbeddingInputError("too_many_video_parts", "Each item supports at most one video part")
     return total_bytes, text_bytes, media_tokens, audio > 0
 
 
 def validate_embedding_request(
     model: str,
-    input_value: EmbeddingInput,
+    input_value: Any,
     *,
     dimensions: Optional[int],
     input_type: Optional[str],
 ) -> None:
     """Validate SDK-visible EmbeddingGemma 2 constraints without changing wire order."""
 
+    if model != EMBEDDINGGEMMA2_MODEL:
+        return
     if input_type is not None and input_type not in ("query", "document", "unspecified"):
         raise EmbeddingInputError("invalid_input_type", "input_type must be query, document, or unspecified")
-    if model != EMBEDDINGGEMMA2_MODEL:
-        if input_type == "unspecified":
-            raise EmbeddingInputError("invalid_input_type", "unspecified input_type is only supported by embeddinggemma-2")
-        return
     if dimensions is not None and dimensions not in EMBEDDINGGEMMA2_DIMENSIONS:
         raise EmbeddingInputError(
             "invalid_dimensions",
@@ -331,6 +349,7 @@ __all__ = [
     "EMBEDDINGGEMMA2_DIMENSIONS",
     "EMBEDDINGGEMMA2_PROTOCOL",
     "EMBEDDINGGEMMA2_LIMITS",
+    "EMBEDDINGGEMMA2_MIME_TYPES",
     "EmbeddingInputError",
     "media_from_bytes",
     "media_from_base64",

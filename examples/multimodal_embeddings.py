@@ -22,6 +22,7 @@ response = grid.embeddings(
     [product],
     dimensions=256,
     input_type="document",
+    encoding_format="float",
 )
 
 vector = response["data"][0]["embedding"]

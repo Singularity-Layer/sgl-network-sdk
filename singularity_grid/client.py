@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json as _json
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Literal, Optional, overload
 
 import httpx
 
@@ -24,6 +24,7 @@ from .errors import (
 from .models import (
     AttestationProof,
     CapacityResponse,
+    EmbeddingDimension,
     EmbeddingInput,
     EmbeddingInputType,
     EmbeddingResponse,
@@ -326,15 +327,40 @@ class GridClient:
             },
         }
 
+    @overload
+    def embeddings(
+        self,
+        model: Literal["embeddinggemma-2"],
+        input: EmbeddingInput,
+        *,
+        dimensions: Optional[EmbeddingDimension] = None,
+        input_type: Optional[EmbeddingInputType] = None,
+        encoding_format: Optional[Literal["float"]] = None,
+        tier: Optional[str] = None,
+    ) -> EmbeddingResponse: ...
+
+    @overload
     def embeddings(
         self,
         model: str,
-        input: EmbeddingInput,
+        input: Any,
         *,
         dimensions: Optional[int] = None,
-        input_type: Optional[EmbeddingInputType] = None,
+        input_type: Optional[str] = None,
+        encoding_format: Optional[str] = None,
         tier: Optional[str] = None,
-    ) -> EmbeddingResponse:
+    ) -> Dict[str, Any]: ...
+
+    def embeddings(
+        self,
+        model: str,
+        input: Any,
+        *,
+        dimensions: Optional[int] = None,
+        input_type: Optional[str] = None,
+        encoding_format: Optional[str] = None,
+        tier: Optional[str] = None,
+    ) -> Any:
         """Create embeddings via the OpenAI-compatible ``/v1/embeddings`` endpoint.
 
         ``input`` remains compatible with a string or list of strings. EmbeddingGemma 2
@@ -344,7 +370,8 @@ class GridClient:
 
         ``dimensions`` supports 768, 512, 256, or 128 for EmbeddingGemma 2.
         ``input_type`` accepts ``'query'``, ``'document'``, or ``'unspecified'`` for that
-        model; ``'unspecified'`` skips retrieval prefixes. Billed on processed input only.
+        model; ``'unspecified'`` skips retrieval prefixes. ``encoding_format`` is ``'float'``.
+        Billed on processed input only.
         Requires ``api_key`` (credits); x402 pay-per-call isn't signed by this client.
         Returns an OpenAI-style dictionary, with a modality ``usage.breakdown`` and pinned
         processor/protocol fields for EmbeddingGemma 2:
@@ -356,12 +383,13 @@ class GridClient:
             dimensions=dimensions,
             input_type=input_type,
         )
-        wire_input = input if isinstance(input, str) else list(input)
-        body: Dict[str, Any] = {"model": model, "input": wire_input}
+        body: Dict[str, Any] = {"model": model, "input": input}
         if dimensions is not None:
             body["dimensions"] = dimensions
         if input_type is not None:
             body["input_type"] = input_type
+        if encoding_format is not None:
+            body["encoding_format"] = encoding_format
         if tier is not None:
             body["tier"] = tier
         if model == EMBEDDINGGEMMA2_MODEL:
@@ -376,7 +404,7 @@ class GridClient:
                     "Embedding request body exceeds the 24 MiB limit",
                 )
         try:
-            return self._request("POST", "/v1/embeddings", json=body)  # type: ignore[return-value]
+            return self._request("POST", "/v1/embeddings", json=body)
         except SGLAPIError as err:
             if err.status_code == 402:
                 raise SGLAPIError(402, "Payment required — pass api_key (credits); the Python GridClient does not sign x402 payments.", err.body) from err
@@ -420,7 +448,7 @@ class GridClient:
         """Alias for :meth:`system_one` matching the HTTP endpoint spelling."""
         return self.system_one(*args, **kwargs)
 
-    def embed(self, model: str, input: EmbeddingInput, **kwargs: Any) -> List[List[float]]:
+    def embed(self, model: str, input: Any, **kwargs: Any) -> List[List[float]]:
         """Convenience wrapper around :meth:`embeddings` that returns just the list of
         vectors, ordered to match ``input``."""
         data = self.embeddings(model, input, **kwargs)

@@ -117,13 +117,21 @@ class JobResult(BaseModel):
 EmbeddingModality = Literal["text", "image", "audio", "video"]
 EmbeddingInputType = Literal["query", "document", "unspecified"]
 EmbeddingDimension = Literal[768, 512, 256, 128]
+EmbeddingImageMimeType = Literal["image/jpeg", "image/png", "image/webp"]
+EmbeddingAudioMimeType = Literal["audio/wav", "audio/flac", "audio/mpeg"]
+EmbeddingVideoMimeType = Literal["video/mp4"]
+EmbeddingMediaMimeType = Union[
+    EmbeddingImageMimeType,
+    EmbeddingAudioMimeType,
+    EmbeddingVideoMimeType,
+]
 
 
 class InlineEmbeddingMedia(TypedDict):
     """Canonical media envelope accepted by EmbeddingGemma 2."""
 
     encoding: Literal["base64"]
-    mime_type: str
+    mime_type: EmbeddingMediaMimeType
     data: str
     sha256: str
 

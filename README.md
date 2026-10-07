@@ -115,6 +115,7 @@ response = grid.embeddings(
     [item],
     dimensions=256,
     input_type="document",
+    encoding_format="float",
 )
 print(response["data"][0]["embedding"])
 print(response["usage"]["breakdown"])
@@ -124,6 +125,10 @@ Existing text calls are unchanged: both `"one string"` and `["one", "two"]` rema
 EmbeddingGemma 2 supports dimensions `768`, `512`, `256`, and `128`; `input_type` can be
 `"query"`, `"document"`, or `"unspecified"`. See
 [`examples/multimodal_embeddings.py`](examples/multimodal_embeddings.py) for a runnable example.
+
+Supported MIME types are exported as `EMBEDDINGGEMMA2_MIME_TYPES`: JPEG, PNG, WebP, WAV, FLAC,
+MP3, and MP4. Platform aliases inferred for `.wav` and `.flac` files are normalized to the exact
+Grid values `audio/wav` and `audio/flac`.
 
 The public constants `EMBEDDINGGEMMA2_LIMITS` describe the request limits. Key limits are 16 batch
 items, 16 ordered parts per item, 8 images per item, one audio and one video part per item, 30

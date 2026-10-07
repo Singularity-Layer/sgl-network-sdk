@@ -7,6 +7,7 @@ import pytest
 
 from singularity_grid import (
     EMBEDDINGGEMMA2_LIMITS,
+    EMBEDDINGGEMMA2_MIME_TYPES,
     EMBEDDINGGEMMA2_MODEL,
     EmbeddingInputError,
     GridClient,
@@ -20,6 +21,7 @@ from singularity_grid import (
     text_part,
     video_part,
 )
+from singularity_grid.embeddings import validate_embedding_request
 
 
 def _mock_client(handler):
@@ -50,6 +52,40 @@ def test_media_helpers_create_canonical_base64_and_sha(tmp_path):
     path = tmp_path / "fixture.png"
     path.write_bytes(raw)
     assert media_from_file(path) == from_bytes
+
+
+@pytest.mark.parametrize(
+    ("extension", "mime_type"),
+    [
+        ("jpg", "image/jpeg"),
+        ("jpeg", "image/jpeg"),
+        ("png", "image/png"),
+        ("webp", "image/webp"),
+        ("wav", "audio/wav"),
+        ("flac", "audio/flac"),
+        ("mp3", "audio/mpeg"),
+        ("mp4", "video/mp4"),
+    ],
+)
+def test_file_helper_normalizes_every_supported_extension(tmp_path, extension, mime_type):
+    path = tmp_path / f"fixture.{extension}"
+    path.write_bytes(b"fixture")
+    assert media_from_file(path)["mime_type"] == mime_type
+
+
+def test_explicit_platform_audio_mime_aliases_are_normalized():
+    assert media_from_bytes(b"wav", mime_type="audio/x-wav")["mime_type"] == "audio/wav"
+    assert media_from_bytes(b"flac", mime_type="audio/x-flac")["mime_type"] == "audio/flac"
+
+
+def test_public_mime_and_cardinality_limits_match_the_grid_contract():
+    assert EMBEDDINGGEMMA2_MIME_TYPES == {
+        "image": ("image/jpeg", "image/png", "image/webp"),
+        "audio": ("audio/wav", "audio/flac", "audio/mpeg"),
+        "video": ("video/mp4",),
+    }
+    assert EMBEDDINGGEMMA2_LIMITS["max_audio_parts_per_item"] == 1
+    assert EMBEDDINGGEMMA2_LIMITS["max_video_parts_per_item"] == 1
 
 
 @pytest.mark.parametrize(
@@ -90,6 +126,7 @@ def test_multimodal_request_preserves_batch_and_part_order():
             "input": [item, "legacy text in the same batch"],
             "dimensions": 256,
             "input_type": "unspecified",
+            "encoding_format": "float",
             "tier": "standard",
         }
         return httpx.Response(
@@ -118,6 +155,7 @@ def test_multimodal_request_preserves_batch_and_part_order():
             [item, "legacy text in the same batch"],
             dimensions=256,
             input_type="unspecified",
+            encoding_format="float",
             tier="standard",
         )
     assert response["usage"]["breakdown"]["image"] == 280
@@ -132,6 +170,24 @@ def test_existing_string_inputs_keep_their_wire_shape(input_value):
 
     with _mock_client(handler) as client:
         response = client.embeddings("nomic-embed-text-v1.5", input_value, dimensions=64)
+    assert response["data"] == []
+
+
+def test_legacy_broad_input_is_not_coerced_by_the_new_typed_surface():
+    legacy_input = {"ids": [1, 2, 3]}
+
+    def handler(request):
+        payload = json.loads(request.content)
+        assert payload["input"] == legacy_input
+        assert payload["input_type"] == "provider-specific"
+        return httpx.Response(200, json={"data": [], "usage": {}})
+
+    with _mock_client(handler) as client:
+        response = client.embeddings(
+            "custom-legacy-model",
+            legacy_input,
+            input_type="provider-specific",
+        )
     assert response["data"] == []
 
 
@@ -159,6 +215,54 @@ def test_batch_and_duration_limits_fail_before_network():
         with pytest.raises(EmbeddingInputError) as batch:
             client.embeddings(EMBEDDINGGEMMA2_MODEL, ["x"] * 17)
     assert batch.value.code == "invalid_batch"
+
+
+def test_duplicate_audio_and_video_parts_have_distinct_stable_codes():
+    audio = audio_part(
+        media_from_bytes(b"wav", mime_type="audio/wav"),
+        duration_seconds=1,
+    )
+    video = video_part(
+        media_from_bytes(b"mp4", mime_type="video/mp4"),
+        duration_seconds=1,
+    )
+    with pytest.raises(EmbeddingInputError) as duplicate_audio:
+        multimodal_item(audio, audio)
+    assert duplicate_audio.value.code == "too_many_audio_parts"
+    with pytest.raises(EmbeddingInputError) as duplicate_video:
+        multimodal_item(video, video)
+    assert duplicate_video.value.code == "too_many_video_parts"
+
+
+@pytest.mark.parametrize(
+    ("input_type", "prefix"),
+    [
+        (None, "task: search result | query: "),
+        ("query", "task: search result | query: "),
+        ("document", "title: none | text: "),
+        ("unspecified", ""),
+    ],
+)
+def test_context_preflight_matches_grid_prefix_and_template_budget(input_type, prefix):
+    text_bytes = (
+        EMBEDDINGGEMMA2_LIMITS["max_processed_tokens_per_item"]
+        - len(prefix.encode("utf-8"))
+        - EMBEDDINGGEMMA2_LIMITS["processor_template_tokens"]
+    )
+    validate_embedding_request(
+        EMBEDDINGGEMMA2_MODEL,
+        "x" * text_bytes,
+        dimensions=768,
+        input_type=input_type,
+    )
+    with pytest.raises(EmbeddingInputError) as raised:
+        validate_embedding_request(
+            EMBEDDINGGEMMA2_MODEL,
+            "x" * (text_bytes + 1),
+            dimensions=768,
+            input_type=input_type,
+        )
+    assert raised.value.code == "context_limit_exceeded"
 
 
 def test_encoded_body_limit_is_checked_before_network():
