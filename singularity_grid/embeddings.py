@@ -300,9 +300,15 @@ def validate_embedding_request(
     *,
     dimensions: Optional[int],
     input_type: Optional[str],
+    encoding_format: Optional[str],
 ) -> None:
     """Validate SDK-visible EmbeddingGemma 2 constraints without changing wire order."""
 
+    if encoding_format is not None and encoding_format != "float":
+        raise EmbeddingInputError(
+            "invalid_encoding_format",
+            'encoding_format must be "float"',
+        )
     if model != EMBEDDINGGEMMA2_MODEL:
         return
     if input_type is not None and input_type not in ("query", "document", "unspecified"):

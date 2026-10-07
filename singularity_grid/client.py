@@ -382,6 +382,7 @@ class GridClient:
             input,
             dimensions=dimensions,
             input_type=input_type,
+            encoding_format=encoding_format,
         )
         body: Dict[str, Any] = {"model": model, "input": input}
         if dimensions is not None:

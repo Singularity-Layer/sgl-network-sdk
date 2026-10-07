@@ -191,6 +191,25 @@ def test_legacy_broad_input_is_not_coerced_by_the_new_typed_surface():
     assert response["data"] == []
 
 
+def test_non_float_encoding_is_rejected_before_transport():
+    requested = False
+
+    def handler(_request):
+        nonlocal requested
+        requested = True
+        return httpx.Response(200, json={"data": [], "usage": {}})
+
+    with _mock_client(handler) as client:
+        with pytest.raises(EmbeddingInputError) as raised:
+            client.embeddings(
+                "nomic-embed-text-v1.5",
+                "text",
+                encoding_format="base64",
+            )
+    assert raised.value.code == "invalid_encoding_format"
+    assert requested is False
+
+
 @pytest.mark.parametrize(
     ("kwargs", "code"),
     [
@@ -254,6 +273,7 @@ def test_context_preflight_matches_grid_prefix_and_template_budget(input_type, p
         "x" * text_bytes,
         dimensions=768,
         input_type=input_type,
+        encoding_format="float",
     )
     with pytest.raises(EmbeddingInputError) as raised:
         validate_embedding_request(
@@ -261,6 +281,7 @@ def test_context_preflight_matches_grid_prefix_and_template_budget(input_type, p
             "x" * (text_bytes + 1),
             dimensions=768,
             input_type=input_type,
+            encoding_format="float",
         )
     assert raised.value.code == "context_limit_exceeded"
 
