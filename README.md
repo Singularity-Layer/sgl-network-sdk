@@ -88,7 +88,55 @@ attestation = grid.get_attestation(job.job_id)
 print(f"TEE verified: {attestation.verified}")
 ```
 
-### 4. System One / Laya
+### 4. Multimodal embeddings
+
+EmbeddingGemma 2 returns one normalized vector per input item. Each item can contain ordered text,
+image, audio, and video parts. Media stays inline in the confidential request and must include a
+SHA-256 digest. The file helper reads only supported, bounded local files and creates the canonical
+base64 envelope for you.
+
+```python
+from singularity_grid import (
+    EMBEDDINGGEMMA2_MODEL,
+    GridClient,
+    image_part,
+    media_from_file,
+    multimodal_item,
+    text_part,
+)
+
+grid = GridClient(api_key="scg_your_api_key")
+item = multimodal_item(
+    text_part("A compact red travel backpack"),
+    image_part(media_from_file("./backpack.png")),
+)
+response = grid.embeddings(
+    EMBEDDINGGEMMA2_MODEL,
+    [item],
+    dimensions=256,
+    input_type="document",
+    encoding_format="float",
+)
+print(response["data"][0]["embedding"])
+print(response["usage"]["breakdown"])
+```
+
+Existing text calls are unchanged: both `"one string"` and `["one", "two"]` remain valid.
+EmbeddingGemma 2 supports dimensions `768`, `512`, `256`, and `128`; `input_type` can be
+`"query"`, `"document"`, or `"unspecified"`. See
+[`examples/multimodal_embeddings.py`](examples/multimodal_embeddings.py) for a runnable example.
+
+Supported MIME types are exported as `EMBEDDINGGEMMA2_MIME_TYPES`: JPEG, PNG, WebP, WAV, FLAC,
+MP3, and MP4. Platform aliases inferred for `.wav` and `.flac` files are normalized to the exact
+Grid values `audio/wav` and `audio/flac`.
+
+The public constants `EMBEDDINGGEMMA2_LIMITS` describe the request limits. Key limits are 16 batch
+items, 16 ordered parts per item, 8 images per item, one audio and one video part per item, 30
+seconds of audio, 32 seconds of video, and 20 MiB of decoded media per request. Local validation
+raises `EmbeddingInputError` with a stable `.code`. API failures raise `SGLAPIError`; its `.code`
+contains the server's stable error code when present.
+
+### 5. System One / Laya
 
 Laya is served as a typed-decision model, not as chat completions.
 
@@ -132,6 +180,8 @@ print(decision["answers"])
 | `v1_models(type=None)` | No | OpenAI-compatible model list; pass `type="systemone"` for Laya |
 | `systemone_models()` | No | List Laya/System One typed-decision models |
 | `pricing()` | No | Pricing table for all models |
+| `embeddings(model, input, ...)` | Yes | Typed text or ordered multimodal embeddings |
+| `embed(model, input, ...)` | Yes | Embedding vectors only, ordered like the input |
 | `system_one(state, questions, ...)` | Yes | Call `/v1/systemone` for typed decisions |
 | `submit_job(model, input_payload, ...)` | Yes | Submit a compute job |
 | `get_job(job_id)` | Yes | Get job status and result |
@@ -146,6 +196,7 @@ print(decision["answers"])
 | `SGLAuthError` | 401 or 403 response |
 | `SGLNotFoundError` | 404 response |
 | `SGLConnectionError` | Orchestrator unreachable or timeout |
+| `EmbeddingInputError` | Local media, input, dimension, or limit validation failure; inspect `.code` |
 
 ### Configuration
 

@@ -3,14 +3,31 @@
 from __future__ import annotations
 
 import json as _json
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Literal, Optional, overload
 
 import httpx
 
 from . import e2e
+from .embeddings import (
+    EMBEDDINGGEMMA2_LIMITS,
+    EMBEDDINGGEMMA2_MODEL,
+    validate_embedding_request,
+)
+from .errors import (
+    EmbeddingInputError,
+    SGLAPIError,
+    SGLAuthError,
+    SGLConnectionError,
+    SGLError,
+    SGLNotFoundError,
+)
 from .models import (
     AttestationProof,
     CapacityResponse,
+    EmbeddingDimension,
+    EmbeddingInput,
+    EmbeddingInputType,
+    EmbeddingResponse,
     JobResponse,
     JobResult,
     ModelInfo,
@@ -34,40 +51,6 @@ def _count_images(messages: List[Dict[str, Any]]) -> int:
         if isinstance(content, list):
             n += sum(1 for p in content if isinstance(p, dict) and p.get("type") == "image_url")
     return n
-
-
-# ---------------------------------------------------------------------------
-# Exceptions
-# ---------------------------------------------------------------------------
-
-class SGLError(Exception):
-    """Base exception for all SGL Network SDK errors."""
-
-
-class SGLAPIError(SGLError):
-    """Raised when the API returns a non-2xx status code."""
-
-    def __init__(
-        self,
-        status_code: int,
-        message: str,
-        body: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        self.status_code = status_code
-        self.body = body
-        super().__init__(f"HTTP {status_code}: {message}")
-
-
-class SGLAuthError(SGLAPIError):
-    """Raised on 401/403 responses."""
-
-
-class SGLNotFoundError(SGLAPIError):
-    """Raised on 404 responses."""
-
-
-class SGLConnectionError(SGLError):
-    """Raised when the orchestrator is unreachable."""
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +327,19 @@ class GridClient:
             },
         }
 
+    @overload
+    def embeddings(
+        self,
+        model: Literal["embeddinggemma-2"],
+        input: EmbeddingInput,
+        *,
+        dimensions: Optional[EmbeddingDimension] = None,
+        input_type: Optional[EmbeddingInputType] = None,
+        encoding_format: Optional[Literal["float"]] = None,
+        tier: Optional[str] = None,
+    ) -> EmbeddingResponse: ...
+
+    @overload
     def embeddings(
         self,
         model: str,
@@ -351,29 +347,68 @@ class GridClient:
         *,
         dimensions: Optional[int] = None,
         input_type: Optional[str] = None,
+        encoding_format: Optional[str] = None,
         tier: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, Any]: ...
+
+    def embeddings(
+        self,
+        model: str,
+        input: Any,
+        *,
+        dimensions: Optional[int] = None,
+        input_type: Optional[str] = None,
+        encoding_format: Optional[str] = None,
+        tier: Optional[str] = None,
+    ) -> Any:
         """Create embeddings via the OpenAI-compatible ``/v1/embeddings`` endpoint.
 
-        ``input`` is a string or list of strings. ``dimensions`` truncates Matryoshka
-        models (e.g. nomic ``768→256``); ``input_type`` (``'query'`` | ``'document'``)
-        hints asymmetric retrieval models. Billed on input tokens only — there is no
-        generation. Requires ``api_key`` (credits); x402 pay-per-call isn't signed by
-        this client. Returns an OpenAI-style dict:
+        ``input`` remains compatible with a string or list of strings. EmbeddingGemma 2
+        also accepts a list of typed multimodal items whose ``content`` contains ordered
+        text/image/audio/video parts. Use :mod:`singularity_grid.embeddings` helpers to
+        create bounded inline-base64 media with its SHA-256 digest.
+
+        ``dimensions`` supports 768, 512, 256, or 128 for EmbeddingGemma 2.
+        ``input_type`` accepts ``'query'``, ``'document'``, or ``'unspecified'`` for that
+        model; ``'unspecified'`` skips retrieval prefixes. ``encoding_format`` is ``'float'``.
+        Billed on processed input only.
+        Requires ``api_key`` (credits); x402 pay-per-call isn't signed by this client.
+        Returns an OpenAI-style dictionary, with a modality ``usage.breakdown`` and pinned
+        processor/protocol fields for EmbeddingGemma 2:
         ``{"object": "list", "data": [{"index", "embedding"}, ...], "model", "usage"}``.
         """
+        validate_embedding_request(
+            model,
+            input,
+            dimensions=dimensions,
+            input_type=input_type,
+            encoding_format=encoding_format,
+        )
         body: Dict[str, Any] = {"model": model, "input": input}
         if dimensions is not None:
             body["dimensions"] = dimensions
         if input_type is not None:
             body["input_type"] = input_type
+        if encoding_format is not None:
+            body["encoding_format"] = encoding_format
         if tier is not None:
             body["tier"] = tier
+        if model == EMBEDDINGGEMMA2_MODEL:
+            encoded_body = _json.dumps(
+                body,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            if len(encoded_body) > EMBEDDINGGEMMA2_LIMITS["max_body_bytes"]:
+                raise EmbeddingInputError(
+                    "body_too_large",
+                    "Embedding request body exceeds the 24 MiB limit",
+                )
         try:
             return self._request("POST", "/v1/embeddings", json=body)
         except SGLAPIError as err:
             if err.status_code == 402:
-                raise SGLAPIError(402, "Payment required — pass api_key (credits); the Python GridClient does not sign x402 payments.") from err
+                raise SGLAPIError(402, "Payment required — pass api_key (credits); the Python GridClient does not sign x402 payments.", err.body) from err
             raise
 
     def system_one(
@@ -531,6 +566,8 @@ class GridClient:
                     raise e2e.UnverifiedReply(
                         f"stream chunk {seq} is not signed by the reserved node — refusing it."
                     )
+                if out_key is None or stream_eph is None:
+                    raise SGLAPIError(502, "stream chunk arrived before key setup")
                 text = e2e.open_stream_chunk(out_key, resp_pub, stream_eph, nonce, seq, is_final, chunk["ct"]).decode()
                 if text:
                     yield text
