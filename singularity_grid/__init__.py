@@ -4,6 +4,9 @@ from .processors import ProcessorsClient, PROCESSORS_BASE_URL
 from .client import (
     DEFAULT_BASE_URL,
     GridClient,
+)
+from .errors import (
+    EmbeddingInputError,
     SGLAPIError,
     SGLAuthError,
     SGLConnectionError,
@@ -18,6 +21,21 @@ from .pods import (
 from .models import (
     AttestationProof,
     CapacityResponse,
+    EmbeddingAudioPart,
+    EmbeddingContentPart,
+    EmbeddingData,
+    EmbeddingDimension,
+    EmbeddingImagePart,
+    EmbeddingInput,
+    EmbeddingInputItem,
+    EmbeddingInputType,
+    EmbeddingModality,
+    EmbeddingResponse,
+    EmbeddingTextPart,
+    EmbeddingUsage,
+    EmbeddingUsageBreakdown,
+    EmbeddingVideoPart,
+    InlineEmbeddingMedia,
     JobResponse,
     JobResult,
     ModelInfo,
@@ -26,10 +44,25 @@ from .models import (
     PricingInfo,
     PricingResponse,
     TeeCapacity,
+    MultimodalEmbeddingItem,
+)
+from .embeddings import (
+    EMBEDDINGGEMMA2_DIMENSIONS,
+    EMBEDDINGGEMMA2_LIMITS,
+    EMBEDDINGGEMMA2_MODEL,
+    EMBEDDINGGEMMA2_PROTOCOL,
+    audio_part,
+    image_part,
+    media_from_base64,
+    media_from_bytes,
+    media_from_file,
+    multimodal_item,
+    text_part,
+    video_part,
 )
 from .openai_compat import create_openai_client
 
-__version__ = "0.10.1"
+__version__ = "0.11.0"
 
 __all__ = [
     # Processors — a SEPARATE client on processors.x402compute.cc. Until 0.9.0 these methods
@@ -50,9 +83,39 @@ __all__ = [
     "SGLAuthError",
     "SGLConnectionError",
     "SGLNotFoundError",
+    "EmbeddingInputError",
+    # EmbeddingGemma 2 constants + safe media/input helpers
+    "EMBEDDINGGEMMA2_MODEL",
+    "EMBEDDINGGEMMA2_DIMENSIONS",
+    "EMBEDDINGGEMMA2_PROTOCOL",
+    "EMBEDDINGGEMMA2_LIMITS",
+    "media_from_bytes",
+    "media_from_base64",
+    "media_from_file",
+    "text_part",
+    "image_part",
+    "audio_part",
+    "video_part",
+    "multimodal_item",
     # Models — Grid
     "AttestationProof",
     "CapacityResponse",
+    "EmbeddingAudioPart",
+    "EmbeddingContentPart",
+    "EmbeddingData",
+    "EmbeddingDimension",
+    "EmbeddingImagePart",
+    "EmbeddingInput",
+    "EmbeddingInputItem",
+    "EmbeddingInputType",
+    "EmbeddingModality",
+    "EmbeddingResponse",
+    "EmbeddingTextPart",
+    "EmbeddingUsage",
+    "EmbeddingUsageBreakdown",
+    "EmbeddingVideoPart",
+    "InlineEmbeddingMedia",
+    "MultimodalEmbeddingItem",
     "JobResponse",
     "JobResult",
     "ModelInfo",

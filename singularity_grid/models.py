@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional, Sequence, TypedDict, Union
 
 from pydantic import BaseModel, Field
 
@@ -111,5 +111,90 @@ class JobResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Embeddings
 # ---------------------------------------------------------------------------
 
+EmbeddingModality = Literal["text", "image", "audio", "video"]
+EmbeddingInputType = Literal["query", "document", "unspecified"]
+EmbeddingDimension = Literal[768, 512, 256, 128]
+
+
+class InlineEmbeddingMedia(TypedDict):
+    """Canonical media envelope accepted by EmbeddingGemma 2."""
+
+    encoding: Literal["base64"]
+    mime_type: str
+    data: str
+    sha256: str
+
+
+class EmbeddingTextPart(TypedDict):
+    type: Literal["text"]
+    text: str
+
+
+class EmbeddingImagePart(TypedDict):
+    type: Literal["image"]
+    media: InlineEmbeddingMedia
+
+
+class EmbeddingAudioPart(TypedDict):
+    type: Literal["audio"]
+    media: InlineEmbeddingMedia
+    duration_seconds: float
+
+
+class EmbeddingVideoPart(TypedDict):
+    type: Literal["video"]
+    media: InlineEmbeddingMedia
+    duration_seconds: float
+
+
+EmbeddingContentPart = Union[
+    EmbeddingTextPart,
+    EmbeddingImagePart,
+    EmbeddingAudioPart,
+    EmbeddingVideoPart,
+]
+
+
+class MultimodalEmbeddingItem(TypedDict):
+    """One vector input made from ordered content parts."""
+
+    content: List[EmbeddingContentPart]
+
+
+EmbeddingInputItem = Union[str, MultimodalEmbeddingItem]
+EmbeddingInput = Union[str, Sequence[EmbeddingInputItem]]
+
+
+class EmbeddingData(TypedDict):
+    object: str
+    index: int
+    embedding: List[float]
+
+
+class EmbeddingUsageBreakdown(TypedDict):
+    text: int
+    image: int
+    audio: int
+    video: int
+
+
+class EmbeddingUsage(TypedDict, total=False):
+    prompt_tokens: int
+    total_tokens: int
+    cost_usd: float
+    breakdown: EmbeddingUsageBreakdown
+
+
+class EmbeddingResponse(TypedDict, total=False):
+    object: str
+    data: List[EmbeddingData]
+    model: str
+    usage: EmbeddingUsage
+    processor_revision: str
+    embedding_protocol: str
+
+
+# ---------------------------------------------------------------------------
