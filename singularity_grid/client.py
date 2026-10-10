@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json as _json
-from typing import Any, Dict, Iterator, List, Literal, Optional, overload
+from os import PathLike
+from typing import Any, Dict, Iterator, List, Literal, Optional, Union, overload
 
 import httpx
 
@@ -20,6 +21,8 @@ from .errors import (
     SGLConnectionError,
     SGLError,
     SGLNotFoundError,
+    TranscriptionInputError,
+    TranscriptionResponseError,
 )
 from .models import (
     AttestationProof,
@@ -34,6 +37,23 @@ from .models import (
     ModelsResponse,
     PricingInfo,
     PricingResponse,
+    TranscriptionResponse,
+)
+from .transcriptions import (
+    TRANSCRIPTION_BITS_PER_SAMPLE,
+    TRANSCRIPTION_CHANNELS,
+    TRANSCRIPTION_MAX_PCM_BYTES,
+    TRANSCRIPTION_MAX_RESULT_ENVELOPE_BYTES,
+    TRANSCRIPTION_MODEL,
+    TRANSCRIPTION_MODEL_REVISION,
+    TRANSCRIPTION_MODEL_SHA256,
+    TRANSCRIPTION_PROTOCOL,
+    TRANSCRIPTION_SAMPLE_RATE,
+    create_transcription_plaintext,
+    normalize_transcription_pcm,
+    validate_transcription_options,
+    validate_transcription_reservation,
+    validate_transcription_result,
 )
 
 DEFAULT_BASE_URL = "https://grid.x402compute.cc"
@@ -76,9 +96,17 @@ class GridClient:
         api_key: Optional[str] = None,
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = DEFAULT_TIMEOUT,
+        transcription_canary_token: Optional[str] = None,
+        transcription_timeout: float = 120.0,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
+        self._transcription_timeout = transcription_timeout
+        self._transcription_headers = (
+            {"X-SGL-STT-Canary": transcription_canary_token}
+            if transcription_canary_token
+            else None
+        )
         headers: Dict[str, str] = {"Accept": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -100,12 +128,15 @@ class GridClient:
         *,
         json: Optional[Dict[str, Any]] = None,
         params: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        timeout: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Make an HTTP request and return the parsed JSON body."""
         try:
-            response = self._client.request(
-                method, path, json=json, params=params
-            )
+            request_options: Dict[str, Any] = {"json": json, "params": params, "headers": headers}
+            if timeout is not None:
+                request_options["timeout"] = timeout
+            response = self._client.request(method, path, **request_options)
         except httpx.ConnectError as exc:
             raise SGLConnectionError(
                 f"Could not connect to {self._base_url}: {exc}"
@@ -326,6 +357,235 @@ class GridClient:
                 "verified": bool(reservation.get("attestation_verified", False)),
             },
         }
+
+    def transcribe_pcm(
+        self,
+        pcm: Union[bytes, bytearray, memoryview],
+        *,
+        model: Literal["whisper-1"] = TRANSCRIPTION_MODEL,
+        language: str = "auto",
+        request_id: Optional[str] = None,
+        use_credits: bool = True,
+        node: Optional[str] = None,
+        max_price: Optional[float] = None,
+    ) -> TranscriptionResponse:
+        """Transcribe one bounded raw PCM utterance through the confidential Grid.
+
+        ``pcm`` must already be mono, 16 kHz, signed 16-bit little-endian PCM.
+        The SDK validates the 60-second/1.92 MB bound before its first request,
+        reserves using metadata only, then seals audio directly to that node.
+        Submit is attempted once: retrying a timed-out paid request can duplicate
+        an outcome whose payment state is still being reconciled.
+        """
+        raw = normalize_transcription_pcm(pcm)
+        sample_count = len(raw) // 2
+        checked = validate_transcription_options(
+            model=model,
+            language=language,
+            request_id=request_id,
+            use_credits=use_credits,
+            node=node,
+            max_price=max_price,
+        )
+        reserve_body: Dict[str, Any] = {
+            "model": checked["model"],
+            "model_revision": TRANSCRIPTION_MODEL_REVISION,
+            "model_sha256": TRANSCRIPTION_MODEL_SHA256,
+            "transcription_protocol": TRANSCRIPTION_PROTOCOL,
+            "request_id": checked["request_id"],
+            "sample_rate": TRANSCRIPTION_SAMPLE_RATE,
+            "channels": TRANSCRIPTION_CHANNELS,
+            "bits_per_sample": TRANSCRIPTION_BITS_PER_SAMPLE,
+            "sample_count": sample_count,
+            "language": checked["language"],
+            "use_credits": checked["use_credits"],
+        }
+        if checked["node"] is not None:
+            reserve_body["node"] = checked["node"]
+        if checked["max_price"] is not None:
+            reserve_body["max_price"] = checked["max_price"]
+        try:
+            reserve_value = self._request(
+                "POST",
+                "/v1/audio/transcriptions/reserve",
+                json=reserve_body,
+                headers=self._transcription_headers,
+                timeout=self._transcription_timeout,
+            )
+        except _json.JSONDecodeError as exc:
+            raise TranscriptionResponseError(
+                "invalid_reservation", "Transcription reservation was not valid JSON"
+            ) from exc
+        except SGLAPIError as err:
+            if err.status_code == 402:
+                raise SGLAPIError(
+                    402,
+                    "Payment required — pass api_key (credits); the Python "
+                    "GridClient does not sign x402 payments.",
+                    err.body,
+                ) from err
+            raise
+        reservation = validate_transcription_reservation(
+            reserve_value,
+            request_id=checked["request_id"],
+            model=checked["model"],
+            language=checked["language"],
+            sample_count=sample_count,
+        )
+        if checked["node"] is not None and reservation["node_id"] != checked["node"]:
+            raise TranscriptionResponseError(
+                "binding_mismatch", "Reserved node does not match the requested node"
+            )
+        if (
+            checked["max_price"] is not None
+            and reservation["quote"]["price_usd"] > checked["max_price"] + 1e-9
+        ):
+            raise TranscriptionResponseError(
+                "binding_mismatch", "Transcription quote exceeds max_price"
+            )
+        if not e2e.verify_keybind_signature(
+            node_id=reservation["node_id"],
+            ed25519_b58=reservation["node_ed25519_pubkey"],
+            x25519_b58=reservation["node_x25519_pubkey"],
+            key_version=reservation["key_version"],
+            signature_b58=reservation["node_x25519_pubkey_sig"],
+        ):
+            raise TranscriptionResponseError(
+                "invalid_reservation",
+                "Reserved transcription node has an invalid transport-key binding",
+            )
+
+        response_secret, response_public = e2e.new_response_keypair()
+        try:
+            ciphertext, ephemeral_public = e2e.seal_input_base64(
+                reservation["node_x25519_pubkey"],
+                response_public,
+                create_transcription_plaintext(raw, reservation),
+            )
+        except Exception as exc:
+            raise TranscriptionResponseError(
+                "invalid_reservation", "Reserved node transport key cannot seal transcription audio"
+            ) from exc
+        submit_body = {
+            "reservation_token": reservation["reservation_token"],
+            "enc": {
+                "ciphertext": ciphertext,
+                "client_ephemeral_pubkey": ephemeral_public,
+                "client_response_pubkey": response_public,
+                "algorithm": e2e.ALGO_V2,
+                "encoding": "base64",
+            },
+        }
+        try:
+            data = self._request(
+                "POST",
+                "/v1/audio/transcriptions",
+                json=submit_body,
+                headers=self._transcription_headers,
+                timeout=self._transcription_timeout,
+            )
+        except (SGLConnectionError, httpx.TransportError) as exc:
+            raise SGLConnectionError(
+                "Transcription submit outcome may be unknown; reconcile request "
+                f"{checked['request_id']} before retrying"
+            ) from exc
+        except _json.JSONDecodeError as exc:
+            raise TranscriptionResponseError(
+                "invalid_envelope", "Transcription response was not valid JSON"
+            ) from exc
+        except SGLAPIError as err:
+            if err.status_code == 402:
+                raise SGLAPIError(
+                    402,
+                    "Payment required — pass api_key (credits); the Python "
+                    "GridClient does not sign x402 payments.",
+                    err.body,
+                ) from err
+            raise
+
+        if not isinstance(data, dict) or data.get("object") != "transcription":
+            raise TranscriptionResponseError("invalid_envelope", "Transcription response is not an envelope")
+        job_id = data.get("job_id")
+        sealed = data.get("sealed_result")
+        if (
+            job_id != reservation["request_id"]
+            or data.get("result_envelope_version") != "v1"
+            or not isinstance(data.get("result_envelope_signature"), str)
+            or not 64 <= len(data["result_envelope_signature"]) <= 88
+            or not isinstance(sealed, dict)
+            or sealed.get("algorithm") != e2e.ALGO_V2
+            or sealed.get("encoding") != "base64"
+            or not isinstance(sealed.get("ephemeral_public_key"), str)
+            or not 32 <= len(sealed["ephemeral_public_key"]) <= 44
+            or not isinstance(sealed.get("ciphertext"), str)
+            or len(sealed["ciphertext"])
+            > 4 * ((TRANSCRIPTION_MAX_RESULT_ENVELOPE_BYTES + 2) // 3)
+            or len(sealed["ciphertext"]) // 4 * 3 - (2 if sealed["ciphertext"].endswith("==") else 1 if sealed["ciphertext"].endswith("=") else 0)
+            > TRANSCRIPTION_MAX_RESULT_ENVELOPE_BYTES
+        ):
+            raise TranscriptionResponseError(
+                "invalid_envelope",
+                "Transcription response did not contain the negotiated signed envelope",
+            )
+        if "billing_pending" in data and not isinstance(data["billing_pending"], bool):
+            raise TranscriptionResponseError("invalid_result", "Transcription billing state is invalid")
+        try:
+            e2e.require_verified_reply(reservation, data, kind="transcription")
+        except e2e.UnverifiedReply as exc:
+            raise TranscriptionResponseError(
+                "unverified_result",
+                "Transcription result is not signed by the reserved node",
+            ) from exc
+        try:
+            plaintext = e2e.open_output_base64(
+                response_secret,
+                response_public,
+                sealed["ephemeral_public_key"],
+                sealed["ciphertext"],
+            )
+            parsed = _json.loads(plaintext.decode("utf-8", errors="strict"))
+        except Exception as exc:
+            raise TranscriptionResponseError(
+                "invalid_envelope",
+                "Transcription result could not be decrypted and decoded",
+            ) from exc
+        return validate_transcription_result(
+            parsed,
+            outer_job_id=job_id,
+            reservation=reservation,
+            usage_value=data.get("usage"),
+            billing_pending_value=data.get("billing_pending"),
+        )
+
+    def transcribe_pcm_file(
+        self,
+        path: Union[str, PathLike[str]],
+        *,
+        model: Literal["whisper-1"] = TRANSCRIPTION_MODEL,
+        language: str = "auto",
+        request_id: Optional[str] = None,
+        use_credits: bool = True,
+        node: Optional[str] = None,
+        max_price: Optional[float] = None,
+    ) -> TranscriptionResponse:
+        """Read and transcribe a local raw-PCM file with bounded allocation."""
+        try:
+            file = open(path, "rb")
+        except (OSError, TypeError) as exc:
+            raise TranscriptionInputError(
+                "invalid_file", "PCM file could not be opened"
+            ) from exc
+        with file:
+            raw = file.read(TRANSCRIPTION_MAX_PCM_BYTES + 1)
+        if len(raw) > TRANSCRIPTION_MAX_PCM_BYTES:
+            raise TranscriptionInputError(
+                "file_too_large",
+                f"PCM file must be at most {TRANSCRIPTION_MAX_PCM_BYTES} bytes",
+            )
+        return self.transcribe_pcm(
+            raw, model=model, language=language, request_id=request_id,
+            use_credits=use_credits, node=node, max_price=max_price,
+        )
 
     @overload
     def embeddings(

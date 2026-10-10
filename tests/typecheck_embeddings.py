@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, Optional
 
-from singularity_grid import EmbeddingResponse, GridClient
+from singularity_grid import EmbeddingResponse, GridClient, TranscriptionResponse
 
 client = GridClient(base_url="https://grid.test")
 
@@ -28,3 +28,9 @@ typed_response: EmbeddingResponse = client.embeddings(
     input_type="unspecified",
     encoding_format="float",
 )
+
+transcription_response: TranscriptionResponse = client.transcribe_pcm(
+    b"\x00\x00", language="en"
+)
+
+transcription_file_response: TranscriptionResponse = client.transcribe_pcm_file("utterance.pcm", language="en")

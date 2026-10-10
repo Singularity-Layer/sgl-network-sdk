@@ -136,7 +136,45 @@ seconds of audio, 32 seconds of video, and 20 MiB of decoded media per request. 
 raises `EmbeddingInputError` with a stable `.code`. API failures raise `SGLAPIError`; its `.code`
 contains the server's stable error code when present.
 
-### 5. System One / Laya
+### 5. Confidential transcription (private v1)
+
+`transcribe_pcm` accepts one raw, headerless PCM utterance. Bytes must already be mono, 16 kHz,
+signed 16-bit little-endian PCM. The SDK rejects empty, partial-sample, and over-60-second inputs
+before network access, reserves an eligible node using metadata only, and seals the audio directly
+to that node's verified X25519 key. It verifies the node signature before decrypting the result.
+
+```python
+from singularity_grid import GridClient
+
+grid = GridClient(api_key="x402c_your_api_key")
+result = grid.transcribe_pcm_file("utterance.pcm", language="en")  # or "auto"
+
+print(result["text"])
+print(result["segments"])
+```
+
+Use `transcribe_pcm(pcm_bytes, ...)` when audio is already in memory. This private v1 route is
+client-sealed JSON; it is not multipart, streaming, or OpenAI wire-compatible. It does not accept
+WAV/MP3 containers or remote URLs. The route can remain unavailable while Grid transcription is
+dark. A submit is never retried automatically because a timeout can leave paid settlement in an
+ambiguous state; retain the logical `request_id` when reconciling a request.
+
+Billable duration is exact `sample_count / 16000`, including fractional seconds. The pinned
+rate is $0.0001 per audio second, with a $0.0001 minimum charge and rounding up to whole
+micro-USDC. The SDK recomputes both quote and final charge; `job_id` must equal the original
+request UUID. After a timeout or `outcome_unknown`, reconcile that UUID before any explicit retry.
+The SDK does not sign x402 wallet payments; use API-key credits for this client.
+
+Request IDs must be canonical lowercase UUIDv4 values; the SDK generates one when omitted.
+Silent audio can return an empty transcript with no segments. Segment text has a combined
+64 KiB UTF-8 limit, and timestamp starts/ends must be nondecreasing, allowing at most 50 ms overlap.
+
+The package exports the exact model commit and SHA-256, protocol, audio format, and limits.
+Local input failures raise `TranscriptionInputError`. Substituted reservations, bad node key
+bindings/signatures, unsupported envelopes, and result binding mismatches raise
+`TranscriptionResponseError`. Neither exception includes audio or transcript data.
+
+### 6. System One / Laya
 
 Laya is served as a typed-decision model, not as chat completions.
 
@@ -182,6 +220,8 @@ print(decision["answers"])
 | `pricing()` | No | Pricing table for all models |
 | `embeddings(model, input, ...)` | Yes | Typed text or ordered multimodal embeddings |
 | `embed(model, input, ...)` | Yes | Embedding vectors only, ordered like the input |
+| `transcribe_pcm(pcm, ...)` | Yes | Validate, client-seal, and transcribe raw 16 kHz mono s16 PCM |
+| `transcribe_pcm_file(path, ...)` | Yes | Bounded raw-PCM file helper |
 | `system_one(state, questions, ...)` | Yes | Call `/v1/systemone` for typed decisions |
 | `submit_job(model, input_payload, ...)` | Yes | Submit a compute job |
 | `get_job(job_id)` | Yes | Get job status and result |
@@ -197,6 +237,8 @@ print(decision["answers"])
 | `SGLNotFoundError` | 404 response |
 | `SGLConnectionError` | Orchestrator unreachable or timeout |
 | `EmbeddingInputError` | Local media, input, dimension, or limit validation failure; inspect `.code` |
+| `TranscriptionInputError` | Local PCM, language, request ID, or limit validation failure; inspect `.code` |
+| `TranscriptionResponseError` | Reservation key binding, signed envelope, or result binding failed |
 
 ### Configuration
 
@@ -205,6 +247,8 @@ print(decision["answers"])
 | `api_key` | `None` | Bearer token for authenticated endpoints |
 | `base_url` | orchestrator URL | Override the orchestrator URL |
 | `timeout` | `60.0` | Request timeout in seconds |
+| `transcription_timeout` | `120.0` | STT-only reserve/submit timeout in seconds |
+| `transcription_canary_token` | `None` | Private token sent only to STT reserve/submit routes |
 
 ## License
 

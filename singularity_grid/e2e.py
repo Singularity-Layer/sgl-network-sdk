@@ -10,7 +10,10 @@ The orchestrator only ever relays ciphertext — it never sees the prompt or rep
 
 from __future__ import annotations
 
+import base64
 import base58
+import struct
+import uuid
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from nacl import bindings
@@ -78,6 +81,21 @@ def seal_input(node_pub_b58: str, resp_pub_b58: str, plaintext: bytes) -> tuple[
     aad = _aad_input(node_pub_b58, eph_b58, resp_pub_b58)
     ct = bindings.crypto_aead_xchacha20poly1305_ietf_encrypt(plaintext, aad, nonce, key)
     return _b58e(nonce + ct), eph_b58
+
+
+def seal_input_base64(
+    node_pub_b58: str, resp_pub_b58: str, plaintext: bytes
+) -> tuple[str, str]:
+    """Seal input with v2 cryptography and canonical base64 envelope bytes."""
+    node_pub = _b58d(node_pub_b58)
+    eph_sk, eph_pk = _gen_keypair()
+    eph_b58 = _b58e(eph_pk)
+    shared = bindings.crypto_scalarmult(eph_sk, node_pub)
+    key = _hkdf(shared, _INFO_INPUT)
+    nonce = bindings.randombytes(24)
+    aad = _aad_input(node_pub_b58, eph_b58, resp_pub_b58)
+    ct = bindings.crypto_aead_xchacha20poly1305_ietf_encrypt(plaintext, aad, nonce, key)
+    return base64.b64encode(nonce + ct).decode("ascii"), eph_b58
 
 
 class UnverifiedReply(Exception):
@@ -164,6 +182,60 @@ def open_output(resp_sk: bytes, resp_pub_b58: str, node_eph_b58: str, ct_b58: st
     aad = _aad_output(resp_pub_b58, node_eph_b58)
     blob = _b58d(ct_b58)
     return bindings.crypto_aead_xchacha20poly1305_ietf_decrypt(blob[24:], aad, blob[:24], key)
+
+
+def open_output_base64(
+    resp_sk: bytes, resp_pub_b58: str, node_eph_b58: str, ciphertext_b64: str
+) -> bytes:
+    """Open a v2 node reply whose envelope bytes use canonical base64."""
+    shared = bindings.crypto_scalarmult(resp_sk, _b58d(node_eph_b58))
+    key = _hkdf(shared, _INFO_OUTPUT)
+    aad = _aad_output(resp_pub_b58, node_eph_b58)
+    blob = base64.b64decode(ciphertext_b64, validate=True)
+    if base64.b64encode(blob).decode("ascii") != ciphertext_b64 or len(blob) < 40:
+        raise ValueError("invalid canonical base64 sealed output")
+    return bindings.crypto_aead_xchacha20poly1305_ietf_decrypt(
+        blob[24:], aad, blob[:24], key
+    )
+
+
+_KEYBIND_PREFIX = b"SGL-NODE-KEYBIND-v1"
+
+
+def verify_keybind_signature(
+    *,
+    node_id: str,
+    ed25519_b58: str,
+    x25519_b58: str,
+    key_version: int,
+    signature_b58: str,
+) -> bool:
+    """Verify the node identity signature over its versioned X25519 key."""
+    try:
+        node_uuid = uuid.UUID(node_id)
+        if str(node_uuid) != node_id.lower():
+            return False
+        ed = _b58d(ed25519_b58)
+        x = _b58d(x25519_b58)
+        signature = _b58d(signature_b58)
+        if len(ed) != 32 or len(x) != 32 or len(signature) != 64:
+            return False
+        if isinstance(key_version, bool) or not 0 <= key_version <= 0xFFFFFFFF:
+            return False
+        message = (
+            _KEYBIND_PREFIX
+            + b"\x00"
+            + node_uuid.bytes
+            + ed
+            + x
+            + struct.pack("<I", key_version)
+        )
+        from nacl.signing import VerifyKey
+
+        VerifyKey(ed).verify(message, signature)
+        return True
+    except Exception:
+        return False
 
 
 def stream_out_key(resp_sk: bytes, node_stream_eph_b58: str) -> bytes:

@@ -7,6 +7,8 @@ from .client import (
 )
 from .errors import (
     EmbeddingInputError,
+    TranscriptionInputError,
+    TranscriptionResponseError,
     SGLAPIError,
     SGLAuthError,
     SGLConnectionError,
@@ -49,6 +51,10 @@ from .models import (
     PricingResponse,
     TeeCapacity,
     MultimodalEmbeddingItem,
+    TranscriptionAttestation,
+    TranscriptionResponse,
+    TranscriptionSegment,
+    TranscriptionUsage,
 )
 from .embeddings import (
     EMBEDDINGGEMMA2_DIMENSIONS,
@@ -66,8 +72,27 @@ from .embeddings import (
     video_part,
 )
 from .openai_compat import create_openai_client
+from .transcriptions import (
+    TRANSCRIPTION_AUDIO_FORMAT,
+    TRANSCRIPTION_BITS_PER_SAMPLE,
+    TRANSCRIPTION_CHANNELS,
+    TRANSCRIPTION_MAX_DURATION_SECONDS,
+    TRANSCRIPTION_MAX_PCM_BYTES,
+    TRANSCRIPTION_MAX_RESULT_ENVELOPE_BYTES,
+    TRANSCRIPTION_MAX_SAMPLES,
+    TRANSCRIPTION_MAX_SEGMENTS,
+    TRANSCRIPTION_MAX_TEXT_BYTES,
+    TRANSCRIPTION_RATE_USD_PER_SECOND,
+    TRANSCRIPTION_MINIMUM_CHARGE_USD,
+    TRANSCRIPTION_MODEL,
+    TRANSCRIPTION_MODEL_REVISION,
+    TRANSCRIPTION_MODEL_SHA256,
+    TRANSCRIPTION_PROTOCOL,
+    TRANSCRIPTION_SAMPLE_RATE,
+    validate_transcription_pcm,
+)
 
-__version__ = "0.11.0"
+__version__ = "0.12.0"
 
 __all__ = [
     # Processors — a SEPARATE client on processors.x402compute.cc. Until 0.9.0 these methods
@@ -89,6 +114,8 @@ __all__ = [
     "SGLConnectionError",
     "SGLNotFoundError",
     "EmbeddingInputError",
+    "TranscriptionInputError",
+    "TranscriptionResponseError",
     # EmbeddingGemma 2 constants + safe media/input helpers
     "EMBEDDINGGEMMA2_MODEL",
     "EMBEDDINGGEMMA2_DIMENSIONS",
@@ -103,6 +130,24 @@ __all__ = [
     "audio_part",
     "video_part",
     "multimodal_item",
+    # Transcription v1 constants + validation
+    "TRANSCRIPTION_MODEL",
+    "TRANSCRIPTION_MODEL_REVISION",
+    "TRANSCRIPTION_MODEL_SHA256",
+    "TRANSCRIPTION_PROTOCOL",
+    "TRANSCRIPTION_AUDIO_FORMAT",
+    "TRANSCRIPTION_SAMPLE_RATE",
+    "TRANSCRIPTION_CHANNELS",
+    "TRANSCRIPTION_BITS_PER_SAMPLE",
+    "TRANSCRIPTION_MAX_DURATION_SECONDS",
+    "TRANSCRIPTION_MAX_SAMPLES",
+    "TRANSCRIPTION_MAX_PCM_BYTES",
+    "TRANSCRIPTION_MAX_RESULT_ENVELOPE_BYTES",
+    "TRANSCRIPTION_MAX_TEXT_BYTES",
+    "TRANSCRIPTION_RATE_USD_PER_SECOND",
+    "TRANSCRIPTION_MINIMUM_CHARGE_USD",
+    "TRANSCRIPTION_MAX_SEGMENTS",
+    "validate_transcription_pcm",
     # Models — Grid
     "AttestationProof",
     "CapacityResponse",
@@ -134,5 +179,9 @@ __all__ = [
     "PricingInfo",
     "PricingResponse",
     "TeeCapacity",
+    "TranscriptionAttestation",
+    "TranscriptionResponse",
+    "TranscriptionSegment",
+    "TranscriptionUsage",
 ]
 from .vault import VaultClient, VaultError, encrypt_envelope, decrypt_envelope
