@@ -206,3 +206,46 @@ class EmbeddingResponse(TypedDict, total=False):
 
 
 # ---------------------------------------------------------------------------
+# Transcription
+# ---------------------------------------------------------------------------
+
+class TranscriptionSegment(TypedDict):
+    start: float
+    end: float
+    text: str
+
+
+class TranscriptionUsage(TypedDict):
+    audio_seconds: float
+    cost_usd: float
+
+
+class TranscriptionAttestation(TypedDict):
+    node_id: str
+    tee_type: Optional[str]
+    verified: bool
+
+
+class _TranscriptionResponseRequired(TypedDict):
+    object: Literal["transcription"]
+    job_id: str
+    request_id: str
+    model: Literal["whisper-1"]
+    model_revision: str
+    model_sha256: str
+    transcription_protocol: Literal["transcription-v1"]
+    sample_count: int
+    text: str
+    language_hint: str
+    language: Optional[str]
+    duration_seconds: float
+    segments: List[TranscriptionSegment]
+    attestation: TranscriptionAttestation
+    usage: TranscriptionUsage
+
+
+class TranscriptionResponse(_TranscriptionResponseRequired, total=False):
+    billing_pending: bool
+
+
+# ---------------------------------------------------------------------------

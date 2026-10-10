@@ -17,6 +17,22 @@ class EmbeddingInputError(SGLError, ValueError):
         super().__init__(message)
 
 
+class TranscriptionInputError(SGLError, ValueError):
+    """Local transcription validation error raised before audio is sent."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        super().__init__(message)
+
+
+class TranscriptionResponseError(SGLError):
+    """A signed transcription envelope, result, or request binding was invalid."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        super().__init__(message)
+
+
 class SGLAPIError(SGLError):
     """Raised when the API returns a non-2xx status code."""
 
