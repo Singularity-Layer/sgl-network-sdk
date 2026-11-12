@@ -376,7 +376,7 @@ class GridClient:
             data = self._request("POST", "/v1/chat/completions", json=body)
         except SGLAPIError as err:
             if err.status_code == 402:
-                raise SGLAPIError(402, "Payment required — pass api_key (credits); the Python GridClient does not sign x402 payments.") from err
+                raise SGLAPIError(402, "Payment required: pass api_key (credits); the Python GridClient does not sign x402 payments.") from err
             raise
 
         sealed = data.get("sealed_result")
@@ -462,7 +462,7 @@ class GridClient:
             if err.status_code == 402:
                 raise SGLAPIError(
                     402,
-                    "Payment required — pass api_key (credits); the Python "
+                    "Payment required: pass api_key (credits); the Python "
                     "GridClient does not sign x402 payments.",
                     err.body,
                 ) from err
@@ -539,7 +539,7 @@ class GridClient:
             if err.status_code == 402:
                 raise SGLAPIError(
                     402,
-                    "Payment required — pass api_key (credits); the Python "
+                    "Payment required: pass api_key (credits); the Python "
                     "GridClient does not sign x402 payments.",
                     err.body,
                 ) from err
@@ -710,7 +710,7 @@ class GridClient:
             return self._request("POST", "/v1/embeddings", json=body)
         except SGLAPIError as err:
             if err.status_code == 402:
-                raise SGLAPIError(402, "Payment required — pass api_key (credits); the Python GridClient does not sign x402 payments.", err.body) from err
+                raise SGLAPIError(402, "Payment required: pass api_key (credits); the Python GridClient does not sign x402 payments.", err.body) from err
             raise
 
     def system_one(
@@ -744,7 +744,7 @@ class GridClient:
             return self._request("POST", "/v1/systemone", json=body)
         except SGLAPIError as err:
             if err.status_code == 402:
-                raise SGLAPIError(402, "Payment required — pass api_key (credits); the Python GridClient does not sign x402 payments.") from err
+                raise SGLAPIError(402, "Payment required: pass api_key (credits); the Python GridClient does not sign x402 payments.") from err
             raise
 
     def systemone(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
@@ -796,7 +796,7 @@ class GridClient:
             if resp.status_code != 200:
                 resp.read()
                 if resp.status_code == 402:
-                    raise SGLAPIError(402, "Payment required — pass api_key (credits); the Python GridClient does not sign x402 payments.")
+                    raise SGLAPIError(402, "Payment required: pass api_key (credits); the Python GridClient does not sign x402 payments.")
                 msg = resp.text
                 try:
                     err = resp.json().get("error")
@@ -914,7 +914,7 @@ class GridClient:
             return self._request("POST", "/v1/messages", json=body, headers=_ANTHROPIC_HEADERS)
         except SGLAPIError as err:
             if err.status_code == 402:
-                raise SGLAPIError(402, "Payment required — pass api_key (credits); the Python GridClient does not sign x402 payments.", err.body) from err
+                raise SGLAPIError(402, "Payment required: pass api_key (credits); the Python GridClient does not sign x402 payments.", err.body) from err
             raise
 
     def messages_stream(
@@ -962,7 +962,7 @@ class GridClient:
                 except Exception:
                     pass
                 if resp.status_code == 402:
-                    raise SGLAPIError(402, "Payment required — pass api_key (credits); the Python GridClient does not sign x402 payments.", err_body)
+                    raise SGLAPIError(402, "Payment required: pass api_key (credits); the Python GridClient does not sign x402 payments.", err_body)
                 if resp.status_code in (401, 403):
                     raise SGLAuthError(resp.status_code, str(msg), err_body)
                 if resp.status_code == 404:
