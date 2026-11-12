@@ -207,6 +207,53 @@ decision = grid.system_one(
 print(decision["answers"])
 ```
 
+### 7. Anthropic Messages API (and Claude Code)
+
+The Grid also speaks the Anthropic Messages format at `POST /v1/messages`, next to the
+OpenAI one. Same auth, same credits, same nodes. Use a Grid model id, not a Claude id.
+
+```python
+import os
+from singularity_grid import GridClient
+
+grid = GridClient(api_key=os.environ["SGL_API_KEY"])
+
+msg = grid.messages(
+    "qwen-2.5-32b",
+    [{"role": "user", "content": "What is a TEE?"}],
+    max_tokens=512,
+    system="Answer in one sentence.",
+)
+print(msg["content"][0]["text"])
+
+# Streaming: Anthropic events as dicts (message_start, content_block_delta, ..., message_stop)
+for ev in grid.messages_stream("qwen-2.5-32b", [{"role": "user", "content": "Count to 5"}], max_tokens=256):
+    if ev["type"] == "content_block_delta" and ev["delta"]["type"] == "text_delta":
+        print(ev["delta"]["text"], end="", flush=True)
+
+# Free input-token estimate
+print(grid.count_tokens("qwen-2.5-32b", [{"role": "user", "content": "hi"}])["input_tokens"])
+```
+
+The official Anthropic SDK works too:
+`anthropic.Anthropic(api_key="x402c_...", base_url="https://grid.x402compute.cc")`.
+
+**Claude Code on the Grid.** Point Claude Code at the Grid with your Singularity Layer compute key:
+
+```bash
+export ANTHROPIC_BASE_URL=https://grid.x402compute.cc
+export ANTHROPIC_API_KEY=x402c_...   # your compute API key
+claude --model qwen-2.5-32b
+```
+
+Claude Code's own system prompt and tools are about 13k tokens, so only large-context models
+fit. Today that is `qwen-2.5-32b` (32k context). Check `max_input_tokens` in `GET /v1/models`
+(send an `anthropic-version` header to get the Anthropic shape) before picking another one.
+
+Not supported (clean 400): extended thinking with a budget, structured outputs, server tools
+such as web search, documents and citations, `top_p` / `top_k`, and assistant prefill. Images
+work on vision models only, as base64, non-streaming.
+
 ## API reference
 
 ### GridClient
@@ -226,6 +273,9 @@ print(decision["answers"])
 | `submit_job(model, input_payload, ...)` | Yes | Submit a compute job |
 | `get_job(job_id)` | Yes | Get job status and result |
 | `get_attestation(job_id)` | Yes | Get TEE attestation proof |
+| `messages(model, messages, max_tokens=...)` | Yes | Anthropic-format chat via `/v1/messages` |
+| `messages_stream(model, messages, max_tokens=...)` | Yes | Streaming `/v1/messages`, yields Anthropic events |
+| `count_tokens(model, messages)` | No | Free input-token estimate via `/v1/messages/count_tokens` |
 
 ### Exceptions
 
@@ -288,3 +338,56 @@ with the `Processor*` models. They pointed at `/grid/processors`, which has neve
 call returned 404 — and their models described an older design that was never shipped. Use
 `ProcessorsClient`. Nothing else changed: chat, embeddings, jobs, models, capacity, pricing,
 reserve and the vault are untouched.
+
+## Agent Pods
+
+`PodsClient` creates and drives hosted agents on `compute.x402layer.cc` with a compute API key.
+
+```python
+import os
+from singularity_grid import PodsClient
+
+pods = PodsClient(api_key=os.environ["SGL_API_KEY"])
+
+# engine: "clawpod" (OpenClaw, default), "hermpod" (Hermes) or "pipod" (the Pi coding agent)
+pod = pods.create_pod(tier="starter", ai={"mode": "managed"}, engine="pipod", max_total_usd=5)
+pods.wait_for_online(pod["id"])
+```
+
+**Bring your own key, with fallbacks.** Presets fix the provider URL: `openrouter`, `openai`,
+`venice`, `0g`, or `custom` with your own `base_url`. Fallbacks are tried in order when the
+primary fails. `managed_models` also allows Singularity Layer models, paid per call from your
+credits (fallbacks and our models are ClawPod only for now).
+
+```python
+pods.create_pod(
+    engine="clawpod",
+    ai={
+        "mode": "byok",
+        "preset": "venice",
+        "api_key": os.environ["VENICE_API_KEY"],
+        "fallbacks": [
+            {"preset": "openrouter", "model": "meta-llama/llama-3.3-70b-instruct", "api_key": os.environ["OPENROUTER_API_KEY"]},
+            {"preset": "singularity", "model": "z-ai/glm-5.3"},
+        ],
+        "managed_models": True,
+    },
+)
+```
+
+**Sandbox.** Run commands, edit files, give a port a URL, and clone a pod from its Agent Vault
+backup. Needs an API key with the `pods:control:write` scope; a pod's own key cannot use these.
+
+```python
+run = pods.exec(pod["id"], "python3 --version", timeout_seconds=30)
+pods.write_file(pod["id"], "hello.txt", "hi")
+print(pods.read_file(pod["id"], "hello.txt")["content"])
+
+port = pods.open_port(pod["id"], 8080, "public")["port"]  # port["url"] is shown once
+pods.close_port(pod["id"], 8080)
+
+clone = pods.clone_pod(pod["id"], os.environ["VAULT_PASSPHRASE"])
+print(pods.clone_status(clone["pod"]["id"]))
+```
+
+See `examples/pods_sandbox.py`.

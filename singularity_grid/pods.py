@@ -27,6 +27,7 @@ import re
 import time
 import uuid
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 import httpx
 
@@ -119,10 +120,34 @@ class PodsClient:
         region: Optional[str] = None,
         term_hours: Optional[int] = None,
         capabilities: Optional[Dict[str, bool]] = None,
-        ai: Optional[Dict[str, str]] = None,
+        ai: Optional[Dict[str, Any]] = None,
         idempotency_key: Optional[str] = None,
+        *,
+        engine: Optional[str] = None,
+        template: Optional[str] = None,
+        template_config: Optional[Dict[str, Any]] = None,
+        channels: Optional[Dict[str, Any]] = None,
+        max_total_usd: Optional[float] = None,
+        agent_instructions: Optional[str] = None,
+        agent_identity: Optional[str] = None,
+        heartbeat_prompt: Optional[str] = None,
+        agent_heartbeat_minutes: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Create a pod. Provisions a machine and charges for it.
+
+        ``engine`` picks the agent: ``"clawpod"`` (OpenClaw, the default), ``"hermpod"``
+        (Hermes) or ``"pipod"`` (the Pi coding agent).
+
+        ``ai`` is ``{"mode": "managed"}`` (our models, billed from credits) or a bring-your-own-key
+        block: ``{"mode": "byok", "preset": "venice", "api_key": ..., "fallbacks": [...],
+        "managed_models": True}``. Presets: ``openrouter``, ``openai``, ``venice``, ``0g``,
+        ``custom`` (``custom`` also needs ``base_url`` and optionally ``api``). ``fallbacks``
+        is an ordered list of at most 3 providers of the same shape (each with ``model`` and
+        ``api_key``), plus optionally one ``{"preset": "singularity", "model": ...}`` entry for a
+        Singularity Layer model paid from credits. ``managed_models`` turns those models on
+        (default on for a BYOK ClawPod; fallbacks and our models are ClawPod only for now).
+
+        ``max_total_usd`` refuses the create, before any charge, if the price is higher.
 
         Returns as soon as the order exists, with ``status == "provisioning"``; the machine
         takes a few minutes to boot. Use :meth:`wait_for_online` if you need to wait.
@@ -136,6 +161,10 @@ class PodsClient:
             ("name", name), ("external_ref", external_ref), ("model", model),
             ("system_prompt", system_prompt), ("region", region),
             ("term_hours", term_hours), ("capabilities", capabilities), ("ai", ai),
+            ("engine", engine), ("template", template), ("template_config", template_config),
+            ("channels", channels), ("max_total_usd", max_total_usd),
+            ("agent_instructions", agent_instructions), ("agent_identity", agent_identity),
+            ("heartbeat_prompt", heartbeat_prompt), ("agent_heartbeat_minutes", agent_heartbeat_minutes),
         ):
             if value is not None:
                 body[key] = value
@@ -165,7 +194,14 @@ class PodsClient:
         return self._request("GET", f"/pods{query}")
 
     def update_pod(self, pod_id: str, **patch: Any) -> Dict[str, Any]:
-        """Change ``name``, ``model``, ``slug`` or ``auto_renew``."""
+        """Change ``name``, ``model``, ``slug``, ``auto_renew``, ``agent_instructions``,
+        ``agent_identity``, ``heartbeat_prompt`` or ``agent_heartbeat_minutes``.
+
+        Bring-your-own-key pods can also pass ``ai={...}``: ``api_key``, ``base_url``, ``api``
+        for the primary, ``managed_models`` (Singularity Layer models on or off), or
+        ``providers`` (the WHOLE ordered list, primary first; an entry without ``api_key``
+        keeps its stored key).
+        """
         return self._request("PATCH", f"/pods/{pod_id}", patch)["pod"]
 
     def delete_pod(self, pod_id: str) -> Dict[str, Any]:
@@ -404,6 +440,93 @@ class PodsClient:
 
     def get_backups(self, pod_id: str) -> Dict[str, Any]:
         return self._request("GET", f"/pods/{pod_id}/backups")["backups"]
+
+
+    # ── sandbox: commands, files, ports, clone ─────────────────────────────────────────
+    #
+    # Owner only: an API key with the ``pods:control:write`` scope (or a signed-in session).
+    # A pod's own key cannot use these, so an agent cannot get a shell on itself. The pod must
+    # be online; right after it first comes online the sandbox may answer 409 for about a minute.
+
+    def exec(self, pod_id: str, command: str, timeout_seconds: Optional[int] = None) -> Dict[str, Any]:
+        """Run a shell command in the pod's workspace as the unprivileged ``pod`` user.
+
+        ``timeout_seconds`` is 1 to 300 (default 60). Returns ``exit_code``, ``timed_out``,
+        ``duration_ms``, ``stdout``, ``stderr``, ``truncated`` (a stream passed 1 MB) and ``cwd``.
+        """
+        body: Dict[str, Any] = {"command": command}
+        if timeout_seconds is not None:
+            body["timeout_seconds"] = timeout_seconds
+        return self._request("POST", f"/pods/{pod_id}/exec", body)["exec"]
+
+    def list_files(self, pod_id: str) -> Dict[str, Any]:
+        """List the files in the pod's workspace: ``{"files": [...], "root": ...}``."""
+        return self._request("GET", f"/pods/{pod_id}/files")
+
+    def read_file(self, pod_id: str, path: str) -> Dict[str, Any]:
+        """Read one file: ``{"path", "content", "modified", "managed"}``."""
+        return self._request("GET", f"/pods/{pod_id}/files?path={quote(path, safe='')}")["file"]
+
+    def write_file(self, pod_id: str, path: str, content: str) -> Dict[str, Any]:
+        """Create or replace a text file in the pod."""
+        return self._request("PUT", f"/pods/{pod_id}/files", {"path": path, "content": content})["file"]
+
+    def open_port(self, pod_id: str, port: int, visibility: str = "public") -> Dict[str, Any]:
+        """Give a port on the pod a URL. Returns ``{"port": {...}, "rotated": bool}``.
+
+        The URL (and, for ``private`` ports, the token and the header to send it in) are
+        returned ONCE; opening the same port again rotates them. Ports below 1024 and the
+        ports the platform uses on the pod are refused. At most 5 open at a time.
+        """
+        return self._request("POST", f"/pods/{pod_id}/ports", {"port": port, "visibility": visibility})
+
+    def list_ports(self, pod_id: str) -> Dict[str, Any]:
+        """The pod's open ports (never their URLs or tokens) and the limit."""
+        return self._request("GET", f"/pods/{pod_id}/ports")
+
+    def close_port(self, pod_id: str, port: int) -> Dict[str, Any]:
+        return self._request("DELETE", f"/pods/{pod_id}/ports/{int(port)}")
+
+    def clone_pod(
+        self,
+        source_pod_id: str,
+        passphrase: str,
+        *,
+        backup_id: Optional[str] = None,
+        name: Optional[str] = None,
+        term_hours: Optional[int] = None,
+        region: Optional[str] = None,
+        max_total_usd: Optional[float] = None,
+        channels: Optional[Dict[str, Any]] = None,
+        ai: Optional[Dict[str, Any]] = None,
+        external_ref: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a NEW pod from the source pod's Agent Vault backup.
+
+        Billed exactly like :meth:`create_pod` and idempotent the same way (a key is
+        generated if you do not pass one). ``passphrase`` is your Vault backup passphrase.
+        Channel tokens and BYOK keys are never copied: pass ``channels`` and, for a source
+        on your own key, ``ai``. Returns ``{"pod": {...}, "clone": {"source_pod_id",
+        "backup_id", "restore": {"status", "message"}}}``; follow the restore with
+        :meth:`clone_status` on the NEW pod's id.
+        """
+        body: Dict[str, Any] = {"passphrase": passphrase}
+        for key, value in (
+            ("backup_id", backup_id), ("name", name), ("term_hours", term_hours),
+            ("region", region), ("max_total_usd", max_total_usd), ("channels", channels),
+            ("ai", ai), ("external_ref", external_ref),
+        ):
+            if value is not None:
+                body[key] = value
+        return self._request(
+            "POST", f"/pods/{source_pod_id}/clone", body,
+            {"Idempotency-Key": idempotency_key or f"sdk-{uuid.uuid4()}"},
+        )
+
+    def clone_status(self, pod_id: str) -> Dict[str, Any]:
+        """The restore job of a pod that was created as a clone."""
+        return self._request("GET", f"/pods/{pod_id}/clone")["clone"]
 
     # ── events and webhooks ────────────────────────────────────────────────────────────
 
