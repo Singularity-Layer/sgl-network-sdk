@@ -77,6 +77,48 @@ def _count_images(messages: List[Dict[str, Any]]) -> int:
 # Client
 # ---------------------------------------------------------------------------
 
+ANTHROPIC_VERSION = "2023-06-01"
+_ANTHROPIC_HEADERS = {"anthropic-version": ANTHROPIC_VERSION}
+
+
+def _messages_body(
+    model: str,
+    messages: List[Dict[str, Any]],
+    max_tokens: int,
+    system: Optional[Any],
+    tools: Optional[List[Dict[str, Any]]],
+    tool_choice: Optional[Dict[str, Any]],
+    stop_sequences: Optional[List[str]],
+    temperature: Optional[float],
+    extra: Dict[str, Any],
+) -> Dict[str, Any]:
+    body: Dict[str, Any] = {"model": model, "messages": messages, "max_tokens": max_tokens}
+    if system is not None:
+        body["system"] = system
+    if tools is not None:
+        body["tools"] = tools
+    if tool_choice is not None:
+        body["tool_choice"] = tool_choice
+    if stop_sequences is not None:
+        body["stop_sequences"] = stop_sequences
+    if temperature is not None:
+        body["temperature"] = temperature
+    body.update(extra)
+    body.pop("stream", None)
+    return body
+
+
+def _parse_stream_event(data_lines: List[str]) -> Dict[str, Any]:
+    try:
+        event = _json.loads("\n".join(data_lines))
+    except _json.JSONDecodeError as exc:
+        raise SGLAPIError(502, "malformed stream event") from exc
+    if event.get("type") == "error":
+        err = event.get("error") or {}
+        raise SGLAPIError(502, str(err.get("message") or "stream aborted by server"), event)
+    return event  # type: ignore[no-any-return]
+
+
 class GridClient:
     """Client for the SGL Network orchestrator API.
 
@@ -839,6 +881,126 @@ class GridClient:
                 raise SGLAPIError(502, "stream ended before final chunk (truncated)")
 
     # -- lifecycle ----------------------------------------------------------
+
+    # -- Anthropic Messages API -----------------------------------------------
+
+    def messages(
+        self,
+        model: str,
+        messages: List[Dict[str, Any]],
+        *,
+        max_tokens: int,
+        system: Optional[Any] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Dict[str, Any]] = None,
+        stop_sequences: Optional[List[str]] = None,
+        temperature: Optional[float] = None,
+        **extra: Any,
+    ) -> Dict[str, Any]:
+        """Anthropic-format chat via ``POST /v1/messages`` (non-streaming).
+
+        Same request and response shape as the Anthropic Messages API, served by
+        Grid models. Use a Grid model id (for example ``qwen-2.5-32b``), not a
+        Claude id. Requires ``api_key`` (credits); this client does not sign x402
+        payments. The orchestrator seals the prompt to the node, so this is not
+        client-side end-to-end encrypted like :meth:`chat_completions`.
+
+        For long replies prefer :meth:`messages_stream`: a non-streaming reply that
+        runs past the Grid's sync window returns 504 with a ``job_id``. Do not
+        retry that, it would start a second paid job.
+        """
+        body = _messages_body(model, messages, max_tokens, system, tools, tool_choice, stop_sequences, temperature, extra)
+        try:
+            return self._request("POST", "/v1/messages", json=body, headers=_ANTHROPIC_HEADERS)
+        except SGLAPIError as err:
+            if err.status_code == 402:
+                raise SGLAPIError(402, "Payment required — pass api_key (credits); the Python GridClient does not sign x402 payments.", err.body) from err
+            raise
+
+    def messages_stream(
+        self,
+        model: str,
+        messages: List[Dict[str, Any]],
+        *,
+        max_tokens: int,
+        system: Optional[Any] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Dict[str, Any]] = None,
+        stop_sequences: Optional[List[str]] = None,
+        temperature: Optional[float] = None,
+        **extra: Any,
+    ) -> Iterator[Dict[str, Any]]:
+        """Streaming Anthropic-format chat via ``POST /v1/messages`` with ``stream: true``.
+
+        Yields each server-sent event as a dict, in Anthropic order
+        (``message_start``, ``content_block_start``, ``content_block_delta``, ...,
+        ``message_stop``). ``ping`` events are yielded too. An ``error`` event after
+        the stream started raises :class:`SGLAPIError`. Text arrives in
+        ``content_block_delta`` events whose ``delta["type"]`` is ``text_delta``.
+        """
+        body = _messages_body(model, messages, max_tokens, system, tools, tool_choice, stop_sequences, temperature, extra)
+        body["stream"] = True
+        headers = dict(_ANTHROPIC_HEADERS)
+        headers["Accept"] = "text/event-stream"
+        try:
+            yield from self._messages_events(body, headers)
+        except httpx.ConnectError as exc:
+            raise SGLConnectionError(f"Could not connect to {self._base_url}: {exc}") from exc
+        except httpx.TimeoutException as exc:
+            raise SGLConnectionError(f"Stream from {self._base_url}/v1/messages timed out: {exc}") from exc
+
+    def _messages_events(self, body: Dict[str, Any], headers: Dict[str, str]) -> Iterator[Dict[str, Any]]:
+        with self._client.stream("POST", "/v1/messages", json=body, headers=headers) as resp:
+            if resp.status_code != 200:
+                resp.read()
+                err_body: Optional[Dict[str, Any]] = None
+                msg: Any = resp.text
+                try:
+                    err_body = resp.json()
+                    err = err_body.get("error") if isinstance(err_body, dict) else None
+                    msg = err.get("message", msg) if isinstance(err, dict) else (err or msg)
+                except Exception:
+                    pass
+                if resp.status_code == 402:
+                    raise SGLAPIError(402, "Payment required — pass api_key (credits); the Python GridClient does not sign x402 payments.", err_body)
+                if resp.status_code in (401, 403):
+                    raise SGLAuthError(resp.status_code, str(msg), err_body)
+                if resp.status_code == 404:
+                    raise SGLNotFoundError(resp.status_code, str(msg), err_body)
+                raise SGLAPIError(resp.status_code, str(msg), err_body)
+            data_lines: List[str] = []
+            for raw in resp.iter_lines():
+                line = raw.rstrip("\r")
+                if line.startswith("data:"):
+                    data_lines.append(line[5:].strip())
+                    continue
+                if line != "" or not data_lines:
+                    continue
+                event = _parse_stream_event(data_lines)
+                data_lines = []
+                yield event
+                if event.get("type") == "message_stop":
+                    return
+            if data_lines:
+                yield _parse_stream_event(data_lines)
+
+    def count_tokens(
+        self,
+        model: str,
+        messages: List[Dict[str, Any]],
+        *,
+        system: Optional[Any] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Estimate input tokens for a Messages request via
+        ``POST /v1/messages/count_tokens``. Free. An estimate from the Grid's own
+        estimator, not a model tokenizer count. Returns ``{"input_tokens": N}``."""
+        body: Dict[str, Any] = {"model": model, "messages": messages}
+        if system is not None:
+            body["system"] = system
+        if tools is not None:
+            body["tools"] = tools
+        return self._request("POST", "/v1/messages/count_tokens", json=body, headers=_ANTHROPIC_HEADERS)
 
     def close(self) -> None:
         """Close the underlying HTTP client."""

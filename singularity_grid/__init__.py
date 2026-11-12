@@ -72,6 +72,7 @@ from .embeddings import (
     video_part,
 )
 from .openai_compat import create_openai_client
+from .client import ANTHROPIC_VERSION
 from .transcriptions import (
     TRANSCRIPTION_AUDIO_FORMAT,
     TRANSCRIPTION_BITS_PER_SAMPLE,
@@ -92,7 +93,7 @@ from .transcriptions import (
     validate_transcription_pcm,
 )
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 __all__ = [
     # Processors — a SEPARATE client on processors.x402compute.cc. Until 0.9.0 these methods
@@ -105,6 +106,7 @@ __all__ = [
     "verify_pod_webhook",
     # Client
     "GridClient",
+    "ANTHROPIC_VERSION",
     "create_openai_client",
     "DEFAULT_BASE_URL",
     # Exceptions
