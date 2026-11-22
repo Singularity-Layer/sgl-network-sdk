@@ -41,9 +41,13 @@ class SGLAPIError(SGLError):
         status_code: int,
         message: str,
         body: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
     ) -> None:
         self.status_code = status_code
         self.body = body
+        # x402 response headers, when the server sent any (PAYMENT-REQUIRED on a 402 carries the
+        # v2 offers a standard x402 client signs). Keys are the header names as sent.
+        self.headers: Dict[str, str] = dict(headers or {})
         error = body.get("error") if isinstance(body, dict) else None
         self.code = (
             error.get("code") or error.get("type")
@@ -51,6 +55,11 @@ class SGLAPIError(SGLError):
             else body.get("code") if isinstance(body, dict) else None
         )
         super().__init__(f"HTTP {status_code}: {message}")
+
+    @property
+    def payment_required(self) -> Optional[str]:
+        """The raw ``PAYMENT-REQUIRED`` header (base64 x402 v2 offers), if the server sent one."""
+        return self.headers.get("PAYMENT-REQUIRED")
 
 
 class SGLAuthError(SGLAPIError):
