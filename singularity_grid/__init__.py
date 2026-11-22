@@ -93,7 +93,7 @@ from .transcriptions import (
     validate_transcription_pcm,
 )
 
-__version__ = "0.13.0"
+__version__ = "0.13.1"
 
 __all__ = [
     # Processors — a SEPARATE client on processors.x402compute.cc. Until 0.9.0 these methods

@@ -103,6 +103,18 @@ def _key_allowed_on_host(raw: str) -> bool:
 
 __all__ = ["ProcessorsClient", "PROCESSORS_BASE_URL"]
 
+_X402_RESPONSE_HEADERS = ("PAYMENT-REQUIRED", "PAYMENT-RESPONSE", "X-PAYMENT-RESPONSE")
+
+
+def _x402_response_headers(response: httpx.Response) -> Dict[str, str]:
+    """The x402 headers a response carried, under their canonical names."""
+    out: Dict[str, str] = {}
+    for name in _X402_RESPONSE_HEADERS:
+        value = response.headers.get(name)
+        if value:
+            out[name] = value
+    return out
+
 
 class ProcessorsClient:
     """Manage Singularity Processors with a compute API key.
@@ -125,6 +137,9 @@ class ProcessorsClient:
     ) -> None:
         self._api_key = api_key
         self._base_url = _assert_safe_base_url(base_url)
+        #: Settlement header of the last :meth:`run_with_payment` (``PAYMENT-RESPONSE`` for x402
+        #: v2, ``X-PAYMENT-RESPONSE`` for v1), or ``None``. Per client, not per thread.
+        self.last_payment_response: Optional[str] = None
         headers: Dict[str, str] = {"Accept": "application/json"}
         if api_key:
             if not _key_allowed_on_host(self._base_url) and not allow_key_on_custom_host:
@@ -158,6 +173,7 @@ class ProcessorsClient:
         json: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         send_api_key: bool = True,
+        x402_headers: Optional[Dict[str, str]] = None,
     ) -> Any:
         # Routes that carry their OWN credential — the public catalogue, and the two run paths,
         # which authenticate with an invoke token or an x402 payment — pass send_api_key=False,
@@ -181,6 +197,10 @@ class ProcessorsClient:
                 f"Request to {self._base_url}{path} timed out: {exc}"
             ) from exc
 
+        x402 = _x402_response_headers(response)
+        if x402_headers is not None:
+            x402_headers.update(x402)
+
         if response.status_code >= 400:
             body: Optional[Dict[str, Any]] = None
             message = response.text
@@ -194,12 +214,12 @@ class ProcessorsClient:
                 pass
 
             if response.status_code in (401, 403):
-                raise SGLAuthError(response.status_code, str(message), body)
+                raise SGLAuthError(response.status_code, str(message), body, headers=x402)
             # 404 is "not yours" as well as "no such slug", deliberately: confirming which
             # private slugs exist to a non-owner is what the rest of the surface refuses to do.
             if response.status_code == 404:
-                raise SGLNotFoundError(response.status_code, str(message), body)
-            raise SGLAPIError(response.status_code, str(message), body)
+                raise SGLNotFoundError(response.status_code, str(message), body, headers=x402)
+            raise SGLAPIError(response.status_code, str(message), body, headers=x402)
 
         if response.status_code == 204 or not response.content:
             return {}
@@ -370,12 +390,21 @@ class ProcessorsClient:
         input: Dict[str, Any],
         payment_header: Optional[str] = None,
         accept_networks: Optional[Sequence[str]] = None,
+        *,
+        payment_signature: Optional[str] = None,
     ) -> Any:
         """Run someone else's processor as a buyer, with an x402 payment header.
 
-        Call once WITHOUT ``payment_header`` to get the 402 and its ``accepts`` array — one entry
-        per chain that publisher takes. Match on ``network``, pay that entry, and retry with the
-        header.
+        Call once WITHOUT a payment to get the 402 and its ``accepts`` array — one entry per chain
+        that publisher takes. Match on ``network``, pay that entry, and retry with the header.
+
+        x402 v1: pass the payment as ``payment_header`` (sent as ``X-Payment``, unchanged).
+        x402 v2: pass the base64 ``PAYMENT-SIGNATURE`` value from a standard x402 v2 client as
+        ``payment_signature``. The 402 raised as :class:`SGLAPIError` exposes the v2 offers as
+        ``err.payment_required`` when the server sends them. After a paid run the settlement header
+        (``PAYMENT-RESPONSE``, or v1 ``X-PAYMENT-RESPONSE``) is on
+        :attr:`last_payment_response`. Both headers are relayed as given; the server refuses two
+        different payments and charges nothing.
 
         Re-sending the SAME header returns the run that payment already bought and does NOT charge
         again. That is the recovery path for every failure mode, because **there are no refunds**:
@@ -389,12 +418,20 @@ class ProcessorsClient:
         headers: Dict[str, str] = {}
         if payment_header:
             headers["X-Payment"] = payment_header
+        if payment_signature:
+            headers["PAYMENT-SIGNATURE"] = payment_signature
         if accept_networks:
             headers["X-Accept-Networks"] = ",".join(accept_networks)
-        return self._request(
-            "POST",
-            f"/processors/{slug}/run",
-            json={"input": input},
-            headers=headers or None,
-            send_api_key=False,
-        )
+        x402: Dict[str, str] = {}
+        self.last_payment_response = None
+        try:
+            return self._request(
+                "POST",
+                f"/processors/{slug}/run",
+                json={"input": input},
+                headers=headers or None,
+                send_api_key=False,
+                x402_headers=x402,
+            )
+        finally:
+            self.last_payment_response = x402.get("PAYMENT-RESPONSE") or x402.get("X-PAYMENT-RESPONSE")

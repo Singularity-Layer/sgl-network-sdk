@@ -330,6 +330,13 @@ p.run("my-processor", {"name": "world"}, invoke_token)
 with both a money path and an anonymous buyer lane, so it does not read a key as an ownership
 claim. Buyers use `run_with_payment()` with an x402 header instead.
 
+`run_with_payment()` relays both x402 versions. v1: `payment_header=` (sent as `X-Payment`).
+v2: `payment_signature=` (the base64 `PAYMENT-SIGNATURE` value from a standard x402 v2 client).
+An unpaid call raises `SGLAPIError` with status 402; `err.body["accepts"]` has the offers and
+`err.payment_required` has the v2 `PAYMENT-REQUIRED` header when the server sends it. After a paid
+run, `client.last_payment_response` holds `PAYMENT-RESPONSE` (v2) or `X-PAYMENT-RESPONSE` (v1).
+The SDK does not sign payments itself.
+
 ### Upgrading from 0.8.x
 
 The six processor methods on `GridClient` (`deploy_processor`, `invoke_processor`,
